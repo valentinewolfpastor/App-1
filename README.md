@@ -22,6 +22,16 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 2. Record transactions as they happen, or import a CSV from your bank.
 3. Set budgets for the categories you want to control.
 
+### Install it as an app
+
+Once the app is hosted at a web address (for example with GitHub Pages or Netlify), you can install it:
+
+- **iPhone/iPad (Safari):** tap Share → *Add to Home Screen*.
+- **Android (Chrome):** tap ⋮ → *Install app* (or *Add to Home screen*).
+- **Mac/Windows (Chrome or Edge):** click the install icon in the address bar.
+
+It opens in its own window with its own icon, and works offline.
+
 Data is saved in your browser's `localStorage`. Clearing site data erases it, so **download a backup regularly** (Data tab).
 
 ## Development
