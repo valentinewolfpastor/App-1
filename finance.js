@@ -122,8 +122,8 @@
    * Totals for recurring payments of one kind: 'bill' (default), 'saving' or 'investing'.
    * Payments with a varying amount (e.g. paying off a credit card) aren't counted.
    */
-  function billTotals(bills, kind = 'bill') {
-    const active = bills.filter((b) => !b.paused && !b.variable && (b.kind || 'bill') === kind);
+  function billTotals(bills, kind = 'bill', month) {
+    const active = bills.filter((b) => !b.paused && !b.variable && (b.kind || 'bill') === kind && (!month || isActiveIn(b, month)));
     const perMonth = active.reduce((s, b) => s + monthlyCost(b), 0);
     const byCategory = {};
     for (const b of active) byCategory[b.category || 'Other'] = (byCategory[b.category || 'Other'] || 0) + monthlyCost(b);
@@ -139,9 +139,47 @@
     const limit = addDays(today, days);
     return bills
       .filter((b) => !b.paused)
-      .map((b) => ({ bill: b, due: nextDueDate(b, today) }))
-      .filter((x) => x.due && x.due <= limit)
+      .flatMap((b) => {
+        // A payment that only starts later (e.g. a new salary) shows from its first month.
+        const from = b.startMonth && `${b.startMonth}-01` > today ? `${b.startMonth}-01` : today;
+        const due = nextDueDate(b, from);
+        return due && due <= limit && isActiveIn(b, monthKey(due)) ? [{ bill: b, due }] : [];
+      })
       .sort((a, b) => a.due.localeCompare(b.due));
+  }
+
+  /** Whether a recurring item applies in a month (optional startMonth / endMonth, inclusive). */
+  const isActiveIn = (b, month) => (!b.startMonth || month >= b.startMonth) && (!b.endMonth || month <= b.endMonth);
+
+  /** Dates a recurring item is due between `from` and `to` (inclusive). */
+  function occurrences(bill, from, to) {
+    const out = [];
+    if (!bill.dueDate || from > to) return out;
+    let d = nextDueDate(bill, from);
+    for (let i = 0; d && d <= to && i < 600; i++) {
+      if (isActiveIn(bill, monthKey(d))) out.push(d);
+      d = nextDueDate(bill, addDays(d, 1));
+    }
+    return out;
+  }
+
+  /**
+   * What a month looks like on paper: income in, then rent/bills, the card spending
+   * limit, automatic saving and investing, and what's left over.
+   */
+  function monthlyPlan(bills, accounts, month) {
+    const sumKind = (kind) => billTotals(bills, kind, month).perMonth;
+    const cards = accounts.filter((a) => !a.archived && a.type === 'liability' && Number(a.monthlyLimit) > 0)
+      .map((a) => ({ name: a.name, limit: Number(a.monthlyLimit) }));
+    const income = sumKind('income');
+    const fixed = sumKind('bill');
+    const cardSpending = cards.reduce((s, c) => s + c.limit, 0);
+    const saving = sumKind('saving');
+    const investing = sumKind('investing');
+    return {
+      month, income, bills: fixed, cards, cardSpending, saving, investing,
+      left: round2(income - fixed - cardSpending - saving - investing),
+    };
   }
 
   // ---- Goals -----------------------------------------------------------
@@ -167,12 +205,68 @@
   }
 
   /** Amount saved toward a goal: the linked account's latest balance, or the manual amount. */
+  const goalAccountIds = (goal) => (goal.accountIds && goal.accountIds.length ? goal.accountIds : goal.accountId ? [goal.accountId] : []);
+
   function goalSaved(goal, accounts, snapshots, month) {
-    if (goal.accountId) {
-      const bal = balancesAt(accounts, snapshots, month)[goal.accountId];
-      if (bal !== undefined) return bal;
+    const ids = goalAccountIds(goal);
+    if (ids.length) {
+      const bal = balancesAt(accounts, snapshots, month);
+      const known = ids.filter((id) => bal[id] !== undefined);
+      if (known.length) return round2(known.reduce((s, id) => s + bal[id], 0));
     }
     return Number(goal.saved) || 0;
+  }
+
+  /**
+   * Will a goal be reached in time? Counts money already saved, automatic transfers
+   * into the goal's accounts, and expected one-off amounts (e.g. a bonus) before the target date.
+   */
+  function goalPlan(goal, saved, bills, today) {
+    const target = Number(goal.target) || 0;
+    const ids = goalAccountIds(goal);
+    const feeding = bills.filter((b) => !b.paused && !b.variable && ['saving', 'investing'].includes(b.kind) && ids.includes(b.toAccountId));
+    const autoPerMonth = round2(feeding.reduce((s, b) => s + monthlyCost(b), 0));
+    const end = goal.targetDate || null;
+    const lumpList = (goal.expected || []).filter((x) => !x.received && x.date >= today && (!end || x.date <= end));
+    const lumps = round2(lumpList.reduce((s, x) => s + (Number(x.amount) || 0), 0));
+    const remaining = Math.max(0, target - saved);
+    if (!end) {
+      const gap = Math.max(0, remaining - lumps);
+      return { autoPerMonth, lumps, lumpList, remaining, monthsToReach: gap === 0 ? 0 : autoPerMonth > 0 ? Math.ceil(gap / autoPerMonth) : null };
+    }
+    const auto = round2(feeding.reduce((s, b) => s + occurrences(b, addDays(today, 1), end).length * (Number(b.amount) || 0), 0));
+    const projected = round2(saved + auto + lumps);
+    const monthsLeft = Math.max(1, (Number(end.slice(0, 4)) - Number(today.slice(0, 4))) * 12 + Number(end.slice(5, 7)) - Number(today.slice(5, 7)));
+    const shortfall = round2(Math.max(0, target - projected));
+    return {
+      autoPerMonth, auto, lumps, lumpList, remaining, projected, monthsLeft,
+      onTrack: projected >= target,
+      shortfall,
+      extraPerMonth: round2(shortfall / monthsLeft),
+      surplus: round2(Math.max(0, projected - target)),
+    };
+  }
+
+  /** How many months of costs a safety net covers. */
+  const monthsCovered = (amount, monthlyCosts) => (monthlyCosts > 0 ? Math.round((amount / monthlyCosts) * 10) / 10 : null);
+
+  /** Cash, investments and retirement totals (assets only; untagged assets count as cash). */
+  function assetGroups(accounts, balances) {
+    const out = { cash: 0, investments: 0, retirement: 0 };
+    for (const a of accounts) {
+      if (a.type === 'liability' || !(a.id in balances)) continue;
+      out[a.group in out ? a.group : 'cash'] += balances[a.id];
+    }
+    return { cash: round2(out.cash), investments: round2(out.investments), retirement: round2(out.retirement) };
+  }
+
+  /** Months in a row a card bill stayed at or under its limit, counting back from `month`. */
+  function underLimitStreak(cardBills, accountId, limit, month) {
+    const v = (m) => cardBills[m]?.[accountId];
+    let m = v(month) !== undefined ? month : addMonthsToKey(month, -1);
+    let streak = 0;
+    while (v(m) !== undefined && v(m) <= limit) { streak++; m = addMonthsToKey(m, -1); }
+    return streak;
   }
 
   // ---- Pay-in-full streak ------------------------------------------------
@@ -426,7 +520,8 @@
     round2, monthKey, addMonthsToKey, lastMonths, monthRange, addDays, daysBetween,
     balancesAt, netWorthAt, netWorthHistory,
     FREQUENCIES, monthlyCost, nextDueDate, billTotals, upcomingBills,
-    goalProgress, goalSaved, payInFullStreak,
+    isActiveIn, occurrences, monthlyPlan,
+    goalProgress, goalSaved, goalAccountIds, goalPlan, monthsCovered, assetGroups, underLimitStreak, payInFullStreak,
     detectDelimiter, parseCsv, parseAmount, parseDate, guessDateFormat, guessColumns, mapRows,
     EXCLUDED, SPENDING_CATEGORIES, merchantKey, categorize, spendingSummary, entryKey,
   };

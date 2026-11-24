@@ -161,3 +161,71 @@ test('spending summary excludes transfers and separates income', () => {
   ];
   assert.deepEqual(F.spendingSummary(entries, '2026-11'), { spent: 80, income: 2000, byCategory: [{ category: 'Groceries', total: 80 }] });
 });
+
+// ---- Monthly plan, income, goal projections ----
+
+const myBills = [
+  { name: 'Paycheck 1st', kind: 'income', amount: 5000, frequency: 'monthly', dueDate: '2026-12-01', endMonth: '2026-12' },
+  { name: 'Paycheck 15th', kind: 'income', amount: 5000, frequency: 'monthly', dueDate: '2026-12-15', endMonth: '2026-12' },
+  { name: 'New paycheck 1st', kind: 'income', amount: 6000, frequency: 'monthly', dueDate: '2027-01-01', startMonth: '2027-01' },
+  { name: 'New paycheck 15th', kind: 'income', amount: 6000, frequency: 'monthly', dueDate: '2027-01-15', startMonth: '2027-01' },
+  { name: 'Rent', kind: 'bill', amount: 2700, frequency: 'monthly', dueDate: '2026-12-01' },
+  { name: 'Card', kind: 'bill', variable: true, amount: 0, frequency: 'monthly', dueDate: '2026-12-01' },
+  { name: 'To Cap One', kind: 'saving', amount: 1500, frequency: 'monthly', dueDate: '2026-12-15', toAccountId: 'capone' },
+  { name: 'To Fidelity', kind: 'investing', amount: 1500, frequency: 'monthly', dueDate: '2026-12-15', toAccountId: 'fid' },
+];
+const myAccounts = [{ id: 'amex', type: 'liability', monthlyLimit: 3000 }, { id: 'capone', type: 'asset' }];
+
+test('monthly plan uses income active in that month and the card limit', () => {
+  const dec = F.monthlyPlan(myBills, myAccounts, '2026-12');
+  assert.deepEqual([dec.income, dec.bills, dec.cardSpending, dec.saving, dec.investing, dec.left], [10000, 2700, 3000, 1500, 1500, 1300]);
+  assert.equal(F.monthlyPlan(myBills, myAccounts, '2027-01').left, 3300);
+});
+
+test('upcoming list shows a future salary only from its start month', () => {
+  const up = F.upcomingBills(myBills, '2026-11-24', 40).map((u) => `${u.bill.name}@${u.due}`);
+  assert.ok(up.includes('Paycheck 1st@2026-12-01'));
+  assert.ok(up.includes('New paycheck 1st@2027-01-01'));
+  assert.ok(!up.some((x) => x.startsWith('New paycheck 15th')));
+  assert.ok(!up.some((x) => x === 'Paycheck 1st@2027-01-01'));
+});
+
+test('occurrences between two dates', () => {
+  assert.equal(F.occurrences(myBills[6], '2026-11-25', '2027-12-31').length, 13); // Dec 15 2026 .. Dec 15 2027
+  assert.equal(F.occurrences(myBills[0], '2026-11-25', '2027-12-31').length, 1); // ends Dec 2026
+});
+
+test('apartment goal: savings + automatic transfers + expected amounts', () => {
+  const goal = { target: 300000, targetDate: '2027-12-31', accountIds: ['capone', 'fid', 'citi'],
+    expected: [{ label: 'Bonus', amount: 60000, date: '2027-12-15' }, { label: 'Old', amount: 999, date: '2026-01-01' }, { label: 'Done', amount: 5, date: '2027-06-01', received: true }] };
+  const p = F.goalPlan(goal, 69000, myBills, '2026-11-24');
+  assert.equal(p.autoPerMonth, 3000);
+  assert.equal(p.auto, 39000);
+  assert.equal(p.lumps, 60000);
+  assert.equal(p.projected, 168000);
+  assert.equal(p.onTrack, false);
+  assert.equal(p.shortfall, 132000);
+  assert.equal(p.monthsLeft, 13);
+  const withTransfer = F.goalPlan({ ...goal, expected: [...goal.expected, { amount: 145000, date: '2026-12-31' }] }, 69000, myBills, '2026-11-24');
+  assert.equal(withTransfer.projected, 313000);
+  assert.equal(withTransfer.onTrack, true);
+  assert.equal(withTransfer.surplus, 13000);
+});
+
+test('goal with several accounts adds their balances; goal without date estimates months', () => {
+  const accts = [{ id: 'a', type: 'asset' }, { id: 'b', type: 'asset' }];
+  const snaps = { '2026-11': { a: 100, b: 50 } };
+  assert.equal(F.goalSaved({ accountIds: ['a', 'b'] }, accts, snaps, '2026-11'), 150);
+  const p = F.goalPlan({ target: 50000, accountIds: ['hysa'] }, 33000, [{ kind: 'saving', amount: 1700, frequency: 'monthly', dueDate: '2026-12-01', toAccountId: 'hysa' }], '2026-11-24');
+  assert.equal(p.monthsToReach, 10);
+  assert.equal(F.goalPlan({ target: 50000, accountIds: ['hysa'] }, 33000, [], '2026-11-24').monthsToReach, null);
+});
+
+test('safety-net months, asset groups, card limit streak', () => {
+  assert.equal(F.monthsCovered(33000, 5720), 5.8);
+  const accts = [{ id: 'c', type: 'asset' }, { id: 'i', type: 'asset', group: 'investments' }, { id: 'r', type: 'asset', group: 'retirement' }, { id: 'x', type: 'liability' }];
+  assert.deepEqual(F.assetGroups(accts, { c: 38000, i: 64000, r: 88000, x: 10000 }), { cash: 38000, investments: 64000, retirement: 88000 });
+  const bills = { '2026-10': { amex: 2900 }, '2026-11': { amex: 2500 }, '2026-09': { amex: 4000 } };
+  assert.equal(F.underLimitStreak(bills, 'amex', 3000, '2026-12'), 2);
+  assert.equal(F.underLimitStreak({ ...bills, '2026-12': { amex: 3100 } }, 'amex', 3000, '2026-12'), 0);
+});

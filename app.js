@@ -17,7 +17,8 @@
 
   const emptyState = () => ({
     version: 2, settings: { currency: 'USD' },
-    accounts: [], snapshots: {}, paidInFull: {}, bills: [], goals: [], todos: [], spending: [], rules: {}, lastBackup: null,
+    accounts: [], snapshots: {}, paidInFull: {}, cardBills: {}, bills: [], goals: [], todos: [], review: null,
+    spending: [], rules: {}, lastBackup: null,
   });
 
   /** Convert data from the first version of the app (transaction based). */
@@ -39,8 +40,11 @@
   }
 
   function normalize(data) {
-    if (data && Array.isArray(data.transactions) && !data.version) return migrateV1(data);
-    return { ...emptyState(), ...data, settings: { ...emptyState().settings, ...(data && data.settings) } };
+    if (data && Array.isArray(data.transactions) && !data.version) data = migrateV1(data);
+    const s = { ...emptyState(), ...data, settings: { ...emptyState().settings, ...(data && data.settings) } };
+    if (!s.review || !Array.isArray(s.review.items)) s.review = defaultReview(s);
+    if (!s.review.months) s.review.months = {};
+    return s;
   }
 
   function load() {
@@ -50,7 +54,7 @@
       const old = localStorage.getItem(OLD_STORAGE_KEY);
       if (old) return normalize(JSON.parse(old));
     } catch (e) { console.warn('Could not load saved data', e); }
-    return emptyState();
+    return normalize(emptyState());
   }
 
   let state = load();
@@ -124,6 +128,7 @@
   function render() {
     updateFormatters();
     renderOverview();
+    renderReview();
     renderCheckin();
     renderBills();
     renderGoals();
@@ -133,11 +138,16 @@
   }
 
   const activeAccounts = () => state.accounts.filter((a) => !a.archived);
-  const KIND_LABELS = { saving: 'saving', investing: 'investing' };
+  const KIND_LABELS = { saving: 'saving', investing: 'investing', income: 'income' };
   const kindPill = (b) => (KIND_LABELS[b.kind] ? `<span class="pill ${b.kind}">${KIND_LABELS[b.kind]}</span>` : '');
   const todoItem = (t) => `<li class="${t.done ? 'done' : ''}">
-    <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}</span></label>
+    <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}${todoMeta(t)}</span></label>
   </li>`;
+  function todoMeta(t) {
+    const due = t.dueDate && !t.done ? `<span class="due ${t.dueDate < localToday() ? 'late' : Finance.daysBetween(localToday(), t.dueDate) <= 14 ? 'soon' : ''}">${esc(dueText(t.dueDate))}</span>` : '';
+    const note = t.note ? `<span class="todo-note">${esc(t.note)}</span>` : '';
+    return due || note ? ` ${due}${note}` : '';
+  }
 
   // Ticking a checkbox works from any screen (overview, goals, check-in).
   document.addEventListener('change', (e) => {
@@ -167,15 +177,33 @@
     const month = thisMonth();
     const today = localToday();
 
-    // Nudge
-    const nudge = $('#checkin-nudge');
+    // This month: review progress + a few signals
+    const box = $('#ov-month');
     if (!state.accounts.length) {
-      nudge.hidden = false;
-      $('#checkin-nudge-text').textContent = 'Welcome! Start by adding your accounts and their balances. It takes about 5 minutes.';
-    } else if (!state.snapshots[month]) {
-      nudge.hidden = false;
-      $('#checkin-nudge-text').textContent = `Time for your ${monthLong(month)} check-in. Update your balances to see how you're doing.`;
-    } else nudge.hidden = true;
+      box.innerHTML = `<span>Welcome! Start by adding your accounts and their balances. It takes about 5 minutes.</span>
+        <button class="primary" data-goto="checkin">Add accounts</button>`;
+    } else {
+      const rp = reviewProgress(month);
+      const signals = [];
+      for (const a of cardAccounts()) {
+        const bill = state.cardBills[month]?.[a.id];
+        const limit = Number(a.monthlyLimit) || 0;
+        if (bill !== undefined && limit) signals.push(`<span class="chip ${bill <= limit ? 'ok' : 'bad'}">${esc(a.name)} bill ${esc(money(bill))} ${bill <= limit ? '✓ under' : '✗ over'} ${esc(fmtCompact.format(limit))}</span>`);
+        else if (limit) signals.push(`<span class="chip">${esc(a.name)} bill: not entered yet</span>`);
+      }
+      const sn = safetyNetInfo();
+      if (sn) signals.push(`<span class="chip">Safety net covers ${sn.months} months</span>`);
+      const next = state.todos.filter((t) => !t.done && t.dueDate).sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+      if (next) signals.push(`<span class="chip ${next.dueDate < today ? 'bad' : ''}">Next: ${esc(shorten(next.text, 42))} · ${esc(dueText(next.dueDate))}</span>`);
+      const done = rp.done === rp.total;
+      box.innerHTML = `<div class="ov-month-main">
+          <strong>${esc(monthLong(month))} review</strong>
+          <span class="muted">${done ? '✓ All done. Nice work!' : `${rp.done} of ${rp.total} steps done`}</span>
+          <div class="bar-track"><div class="bar-fill ${done ? 'done' : ''}" style="width:${(rp.total ? (rp.done / rp.total) * 100 : 0).toFixed(1)}%"></div></div>
+        </div>
+        <button class="${done ? '' : 'primary'}" data-goto="review">${done ? 'View review' : rp.done ? 'Continue review' : 'Start review'}</button>
+        ${signals.length ? `<div class="chips">${signals.join('')}</div>` : ''}`;
+    }
 
     // Net worth
     const history = Finance.netWorthHistory(state.accounts, state.snapshots, month);
@@ -184,26 +212,41 @@
       $('#ov-networth').textContent = money(now.net);
       $('#ov-networth').className = 'value' + (now.net < 0 ? ' neg' : '');
       const prev = history[history.length - 2];
+      const g = Finance.assetGroups(state.accounts, Finance.balancesAt(state.accounts, state.snapshots, month));
+      const parts = [];
       if (prev) {
         const diff = Finance.round2(now.net - prev.net);
-        $('#ov-networth-sub').innerHTML = `<span class="${diff >= 0 ? 'pos' : 'neg'}">${diff >= 0 ? '▲' : '▼'} ${esc(money(Math.abs(diff)))}</span> since ${esc(monthShort(prev.month))}`;
-      } else $('#ov-networth-sub').textContent = `${money(now.assets)} have · ${money(now.liabilities)} owe`;
+        parts.push(`<span class="${diff >= 0 ? 'pos' : 'neg'}">${diff >= 0 ? '▲' : '▼'} ${esc(money(Math.abs(diff)))}</span> since ${esc(monthShort(prev.month))}`);
+      }
+      if (g.investments || g.retirement) {
+        parts.push(`Cash ${esc(fmtCompact.format(g.cash))} · Invested ${esc(fmtCompact.format(g.investments))} · Retirement ${esc(fmtCompact.format(g.retirement))}${now.liabilities ? ` · Owe ${esc(fmtCompact.format(now.liabilities))}` : ''}`);
+      } else if (!prev) parts.push(`${esc(money(now.assets))} have · ${esc(money(now.liabilities))} owe`);
+      $('#ov-networth-sub').innerHTML = parts.join('<br>');
     } else {
       $('#ov-networth').textContent = '—';
       $('#ov-networth-sub').textContent = 'Do your first check-in';
     }
     renderNetWorthChart(history.slice(-24));
 
-    // Recurring payments
-    const bt = Finance.billTotals(state.bills);
-    const autoSave = Finance.billTotals(state.bills, 'saving').perMonth + Finance.billTotals(state.bills, 'investing').perMonth;
-    $('#ov-bills').textContent = money(bt.perMonth);
-    $('#ov-bills-sub').textContent = !state.bills.length ? 'Nothing added yet'
-      : autoSave ? `+ ${money(autoSave)} saved & invested automatically` : `${money(bt.perYear)} per year`;
+    // Monthly plan
+    const plan = Finance.monthlyPlan(state.bills, state.accounts, month);
+    const later = nextDifferentPlan(plan);
+    if (plan.income) {
+      $('#ov-left').textContent = money(plan.left);
+      $('#ov-left').className = 'value ' + (plan.left < 0 ? 'neg' : 'pos');
+      $('#ov-left-sub').textContent = later ? `${money(later.left)} from ${monthShort(later.month)}` : 'after bills, card, saving & investing';
+    } else {
+      $('#ov-left').textContent = '—';
+      $('#ov-left').className = 'value';
+      $('#ov-left-sub').textContent = 'Add your income on the Recurring tab';
+    }
+    $('#ov-plan').innerHTML = plan.income || plan.bills ? planTable(plan, later) : empty('Add your income, bills and automatic transfers on the Recurring tab to see your monthly plan.');
+
+    // Coming up
     const up = Finance.upcomingBills(state.bills, today, 30);
     $('#ov-upcoming').innerHTML = up.length
-      ? `<ul class="list">${up.map((u) => `<li><span class="when">${esc(dueLabel(u.due))}</span><span>${esc(u.bill.name)} ${kindPill(u.bill)}</span><span class="amt">${u.bill.variable ? '<span class="muted">full balance</span>' : esc(money(u.bill.amount))}</span></li>`).join('')}</ul>`
-      : empty(state.bills.length ? 'Nothing due in the next 30 days.' : 'Add your rent, bills and automatic transfers to see what\'s coming up.');
+      ? `<ul class="list">${up.map((u) => `<li><span class="when">${esc(dueLabel(u.due))}</span><span>${esc(u.bill.name)} ${kindPill(u.bill)}</span><span class="amt ${u.bill.kind === 'income' ? 'pos' : ''}">${u.bill.variable ? '<span class="muted">full balance</span>' : (u.bill.kind === 'income' ? '+' : '') + esc(money(u.bill.amount))}</span></li>`).join('')}</ul>`
+      : empty(state.bills.length ? 'Nothing due in the next 30 days.' : 'Add your rent, bills, income and automatic transfers to see what\'s coming up.');
 
     // My goals (short term on the overview)
     const shortTodos = state.todos.filter((t) => t.horizon !== 'long');
@@ -212,34 +255,23 @@
       ? `<ul class="todo-list compact">${shortTodos.map(todoItem).join('')}</ul>${longTodos.length ? `<p class="muted todo-long-line">Long term: ${longTodos.map((t) => esc(t.text)).join(' · ')}</p>` : ''}`
       : empty('Write down your goals on the Goals tab.');
 
-    // Pay-in-full tracker
-    const pifAccounts = activeAccounts().filter((a) => a.payInFull);
-    $('#ov-pif-card').hidden = !pifAccounts.length;
-    $('#ov-pif').innerHTML = pifAccounts.map((a) => {
-      const streak = Finance.payInFullStreak(state.paidInFull, a.id, month);
-      const months = Finance.lastMonths(month, 6);
-      const dots = months.map((m) => {
-        const paid = state.paidInFull[m]?.[a.id];
-        const cls = paid ? 'paid' : m === month ? 'pending' : 'missed';
-        const tip = paid ? 'paid in full' : m === month ? 'not ticked yet' : 'not marked as paid';
-        return `<span class="pif-dot ${cls}" title="${esc(monthLong(m))}: ${tip}"><span>${esc(monthShort(m).split(' ')[0])}</span></span>`;
-      }).join('');
-      const doneThisMonth = !!state.paidInFull[month]?.[a.id];
-      return `<div class="pif">
-        <div class="pif-head"><strong>${esc(a.name)}</strong><span class="pif-streak">${streak ? `🔥 ${streak} month${streak === 1 ? '' : 's'} in a row` : 'No streak yet'}</span></div>
-        <div class="pif-dots">${dots}</div>
-        <label class="check"><input type="checkbox" data-pif="${a.id}" ${doneThisMonth ? 'checked' : ''}> Paid off in full in ${esc(monthLong(month))}</label>
-      </div>`;
-    }).join('');
+    // Credit card: paid in full + spending limit
+    const cards = cardAccounts();
+    $('#ov-pif-card').hidden = !cards.length;
+    $('#ov-pif').innerHTML = cards.map((a) => cardSummary(a, month, true)).join('');
 
     // Savings goals
     const goals = state.goals.map((g) => ({ ...g, saved: Finance.goalSaved(g, state.accounts, state.snapshots, month) }));
     const saved = goals.reduce((s, g) => s + g.saved, 0);
     const target = goals.reduce((s, g) => s + (Number(g.target) || 0), 0);
     $('#ov-goals').textContent = money(saved);
-    $('#ov-goals-sub').textContent = goals.length ? `of ${money(target)} target` : 'No savings goals yet';
+    $('#ov-goals-sub').textContent = goals.length ? `of ${money(target)} across ${goals.length} goal${goals.length === 1 ? '' : 's'}` : 'No savings goals yet';
     $('#ov-goal-list').innerHTML = goals.length
-      ? goals.map((g) => { const p = Finance.goalProgress(g, today); return barRow(g.name, p.ratio, `${money(g.saved)} / ${fmtCompact.format(g.target)}`, p.done ? 'done' : ''); }).join('')
+      ? goals.map((g) => {
+        const p = Finance.goalProgress(g, today);
+        return `<div class="ov-goal">${barRow(g.name, p.ratio, `${fmtCompact.format(g.saved)} / ${fmtCompact.format(g.target)}`, p.done ? 'done' : '')}
+          <p class="muted ov-goal-sub">${goalStatusLine(g, true)}</p></div>`;
+      }).join('')
       : empty('Set a savings goal, like a safety net or a house deposit.');
 
     // Spending
@@ -255,10 +287,122 @@
     } else {
       $('#ov-spent-label').textContent = 'Spent';
       $('#ov-spent').textContent = '—';
-      $('#ov-spent-sub').textContent = 'Import a bank file';
+      $('#ov-spent-sub').textContent = 'Import a bank or card file';
       $('#ov-spending-title').firstChild.textContent = 'Spending ';
-      $('#ov-spending').innerHTML = empty('Import a file from your bank on the Spending tab to see where your money goes.');
+      $('#ov-spending').innerHTML = empty('Import a statement file from your bank or card on the Spending tab to see where your money goes.');
     }
+  }
+
+  const shorten = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  function dueText(d) {
+    const n = Finance.daysBetween(localToday(), d);
+    if (n < 0) return `overdue since ${dayLabel(d)}`;
+    if (n === 0) return 'today';
+    if (n < 45) return `by ${dayLabel(d)}`;
+    return `by ${monthShort(d.slice(0, 7))}`;
+  }
+
+  /** The first month in the next year whose plan differs (e.g. a raise starting in January). */
+  function nextDifferentPlan(plan) {
+    for (let i = 1; i <= 12; i++) {
+      const m = Finance.addMonthsToKey(plan.month, i);
+      const p = Finance.monthlyPlan(state.bills, state.accounts, m);
+      if (Math.abs(p.left - plan.left) >= 1) return p;
+    }
+    return null;
+  }
+
+  function planTable(plan, later) {
+    const col = (p, key, sign) => `<td class="num ${sign > 0 ? 'pos' : ''}">${p[key] ? (sign > 0 ? '+' : '−') + esc(money(p[key])) : '—'}</td>`;
+    const row = (label, key, sign) => (plan[key] || (later && later[key]) ? `<tr><td>${label}</td>${col(plan, key, sign)}${later ? col(later, key, sign) : ''}</tr>` : '');
+    const cardLabel = plan.cards.length ? `${plan.cards.map((c) => esc(c.name)).join(', ')} (your limit)` : '';
+    const leftCell = (p) => `<td class="num"><strong class="${p.left < 0 ? 'neg' : 'pos'}">${p.left < 0 ? '−' : '+'}${esc(money(Math.abs(p.left)))}</strong></td>`;
+    let tip = '';
+    const ref = later && later.left > plan.left ? later : plan;
+    if (plan.left < 0) tip = `<p class="plan-tip bad">You're planning to spend more than you earn this month. Look at the card limit or the automatic transfers.</p>`;
+    else if (ref.left > 0) {
+      const sn = state.goals.find((g) => g.isSafetyNet);
+      tip = `<p class="plan-tip">💡 Decide where the ${esc(money(ref.left))} left over goes${sn ? `, for example your ${esc(sn.name.toLowerCase())}` : ''}. Money with no plan tends to get spent.</p>`;
+    }
+    if (plan.cards.length) tip += `<p class="muted plan-note">This counts your card at its spending limit. Spending more on the card comes straight out of what's left.</p>`;
+    return `<table class="table plan">
+      ${later ? `<thead><tr><th></th><th class="num">${esc(monthShort(plan.month))}</th><th class="num">From ${esc(monthShort(later.month))}</th></tr></thead>` : ''}
+      <tbody>
+        ${row('Income', 'income', 1)}
+        ${row('Rent &amp; bills', 'bills', -1)}
+        ${cardLabel ? row(cardLabel, 'cardSpending', -1) : ''}
+        ${row('Automatic saving', 'saving', -1)}
+        ${row('Automatic investing', 'investing', -1)}
+        <tr class="plan-total"><td><strong>Left over</strong></td>${leftCell(plan)}${later ? leftCell(later) : ''}</tr>
+      </tbody></table>${tip}`;
+  }
+
+  const cardAccounts = () => activeAccounts().filter((a) => a.type === 'liability' && (a.payInFull || Number(a.monthlyLimit) > 0));
+
+  /** Paid-in-full dots and bill-vs-limit bars for a card. */
+  function cardSummary(a, month, withTick) {
+    const months = Finance.lastMonths(month, 6);
+    const limit = Number(a.monthlyLimit) || 0;
+    const pifStreak = Finance.payInFullStreak(state.paidInFull, a.id, month);
+    const limitStreak = limit ? Finance.underLimitStreak(state.cardBills, a.id, limit, month) : 0;
+    const bills = months.map((m) => state.cardBills[m]?.[a.id]);
+    const maxBill = Math.max(limit, ...bills.filter((v) => v !== undefined), 1);
+    const cols = months.map((m, i) => {
+      const paid = state.paidInFull[m]?.[a.id];
+      const v = bills[i];
+      const h = v !== undefined ? Math.max(4, (v / maxBill) * 64) : 0;
+      const cls = v === undefined ? '' : !limit || v <= limit ? 'ok' : 'bad';
+      return `<div class="cc-col" title="${esc(monthLong(m))}: ${v !== undefined ? 'bill ' + esc(money(v)) : 'no bill entered'}${paid ? ', paid in full' : ''}">
+        <div class="cc-bar-area">${limit ? `<div class="cc-limit" style="bottom:${((limit / maxBill) * 64).toFixed(1)}px"></div>` : ''}<div class="cc-bar ${cls}" style="height:${h.toFixed(1)}px"></div></div>
+        <span class="cc-amt">${v !== undefined ? esc(fmtCompact.format(v)) : '–'}</span>
+        <span class="cc-pif ${paid ? 'paid' : m === month ? 'pending' : ''}">${paid ? '✓' : ''}</span>
+        <span class="cc-month">${esc(monthShort(m).split(' ')[0])}</span>
+      </div>`;
+    }).join('');
+    const streaks = [
+      a.payInFull ? (pifStreak ? `🔥 Paid in full ${pifStreak} month${pifStreak === 1 ? '' : 's'} in a row` : 'Paid in full: no streak yet') : '',
+      limit ? (limitStreak ? `✓ Under ${fmtCompact.format(limit)} ${limitStreak} month${limitStreak === 1 ? '' : 's'} in a row` : `Goal: bill under ${money(limit)}`) : '',
+    ].filter(Boolean);
+    return `<div class="pif">
+      <div class="pif-head"><strong>${esc(a.name)}</strong></div>
+      <p class="muted cc-streaks">${streaks.map(esc).join('<br>')}</p>
+      ${bills.some((v) => v !== undefined) ? `<div class="cc-chart">${cols}</div>
+      ${limit ? '<p class="muted cc-legend"><span class="cc-key ok"></span>under limit <span class="cc-key bad"></span>over limit <span class="cc-key line"></span>limit · ✓ paid in full</p>' : ''}` : '<p class="empty">Your monthly bills will show here as a chart once you enter the first one.</p>'}
+      ${withTick ? `<p class="muted">Enter the bill and tick "paid in full" in your <button class="link" data-goto="review">monthly review</button>.</p>` : ''}
+    </div>`;
+  }
+
+  /** Safety net goal and how many months of costs it covers. */
+  function safetyNetInfo() {
+    const g = state.goals.find((x) => x.isSafetyNet);
+    if (!g) return null;
+    const plan = Finance.monthlyPlan(state.bills, state.accounts, thisMonth());
+    const costs = plan.bills + plan.cardSpending;
+    const saved = Finance.goalSaved(g, state.accounts, state.snapshots, thisMonth());
+    if (!costs) return null;
+    return { goal: g, saved, costs, months: Finance.monthsCovered(saved, costs), targetMonths: Finance.monthsCovered(Number(g.target) || 0, costs) };
+  }
+
+  /** One-line status for a savings goal: on track / short / months covered. */
+  function goalStatusLine(g, brief) {
+    const today = localToday();
+    const p = Finance.goalProgress(g, today);
+    if (p.done) return '<span class="pos">Goal reached! 🎉</span>';
+    const gp = Finance.goalPlan(g, g.saved, state.bills, today);
+    const bits = [];
+    if (g.isSafetyNet) {
+      const sn = safetyNetInfo();
+      if (sn) bits.push(`Covers <strong>${sn.months} months</strong> of costs (target ${sn.targetMonths})`);
+    }
+    if (g.targetDate) {
+      if (gp.onTrack) bits.push(`<span class="pos">On track ✓</span> projected ${esc(fmtCompact.format(gp.projected))} by ${esc(monthShort(g.targetDate.slice(0, 7)))}`);
+      else bits.push(`<span class="neg">Short ${esc(fmtCompact.format(gp.shortfall))}</span>: needs ${esc(money(gp.extraPerMonth))}/month more`);
+    } else if (gp.autoPerMonth > 0) {
+      bits.push(`${esc(money(gp.autoPerMonth))}/month goes in automatically${gp.monthsToReach ? `: about ${gp.monthsToReach} months to go` : ''}`);
+    } else if (!brief || !bits.length) {
+      bits.push(`${esc(money(p.remaining))} to go · nothing goes in automatically`);
+    }
+    return bits.join(' · ');
   }
 
   function renderNetWorthChart(points) {
@@ -300,6 +444,212 @@
     resizeTimer = setTimeout(renderOverview, 150);
   });
 
+  // ---- Monthly review ----------------------------------------------------
+
+  const REVIEW_SECTIONS = { pay: 'Pay & confirm', update: 'Update', reflect: 'Reflect' };
+
+  function defaultReview(s) {
+    const cards = (s.accounts || []).filter((a) => !a.archived && a.type === 'liability' && (a.payInFull || Number(a.monthlyLimit) > 0));
+    return {
+      items: [
+        { section: 'pay', type: 'task', text: 'Pay rent and bills' },
+        ...cards.map((a) => ({ section: 'pay', type: 'card', accountId: a.id, text: `Pay off ${a.name} in full` })),
+        { section: 'pay', type: 'task', text: 'Check the automatic transfers went through' },
+        { section: 'update', type: 'checkin', text: 'Update account balances' },
+        { section: 'update', type: 'import', text: 'Import bank and card statements, and look at where the money went' },
+        { section: 'reflect', type: 'goals', text: 'Review my goals and tick off what\'s done' },
+        { section: 'reflect', type: 'task', text: 'Look at my biggest purchases: which ones weren\'t worth it?' },
+        { section: 'reflect', type: 'note', text: 'Write a note for this month' },
+        { section: 'reflect', type: 'backup', text: 'Download a backup' },
+      ].map((x) => ({ id: uid(), ...x })),
+      months: {},
+    };
+  }
+
+  /** Make sure every card that's paid in full or has a limit has a review step. */
+  function syncReviewCards() {
+    const items = state.review.items;
+    for (const a of cardAccounts()) {
+      if (items.some((i) => i.type === 'card' && i.accountId === a.id)) continue;
+      const at = items.findIndex((i) => i.section !== 'pay');
+      items.splice(at < 0 ? items.length : at, 0, { id: uid(), section: 'pay', type: 'card', accountId: a.id, text: `Pay off ${a.name} in full` });
+    }
+    state.review.items = items.filter((i) => i.type !== 'card' || state.accounts.some((a) => a.id === i.accountId && !a.archived));
+  }
+
+  const reviewMonth = (m) => state.review.months[m] || (state.review.months[m] = { done: {}, note: '' });
+
+  function isReviewDone(item, m) {
+    const rm = state.review.months[m] || { done: {}, note: '' };
+    switch (item.type) {
+      case 'card': return !!state.paidInFull[m]?.[item.accountId];
+      case 'checkin': return !!state.snapshots[m];
+      case 'note': return !!(rm.note || '').trim();
+      case 'backup': return !!(state.lastBackup && state.lastBackup.startsWith(m)) || !!rm.done[item.id];
+      default: return !!rm.done[item.id];
+    }
+  }
+
+  function reviewProgress(m) {
+    const items = state.review.items;
+    const done = items.filter((i) => isReviewDone(i, m)).length;
+    return { done, total: items.length };
+  }
+
+  const rvMonth = $('#rv-month');
+
+  function renderReview() {
+    syncReviewCards();
+    const m = rvMonth.value || thisMonth();
+    const rm = state.review.months[m] || { done: {}, note: '' };
+    const p = reviewProgress(m);
+    $('#rv-title').textContent = `${monthLong(m)} review`;
+    $('#rv-bar').style.width = `${p.total ? (p.done / p.total) * 100 : 0}%`;
+    $('#rv-bar').classList.toggle('done', p.done === p.total && p.total > 0);
+    $('#rv-progress').textContent = p.done === p.total && p.total ? `✓ All ${p.total} steps done. You're on top of things!` : `${p.done} of ${p.total} steps done`;
+
+    const itemHtml = (it, idx) => {
+      const done = isReviewDone(it, m);
+      let box, extra = '';
+      const auto = { checkin: 'Ticks itself when you save your check-in', note: 'Ticks itself when you write a note', backup: 'Ticks itself when you download a backup' }[it.type];
+      if (it.type === 'card') {
+        box = `<input type="checkbox" data-pif="${it.accountId}" data-month="${m}" ${done ? 'checked' : ''}>`;
+        const a = state.accounts.find((x) => x.id === it.accountId);
+        const limit = Number(a?.monthlyLimit) || 0;
+        const bill = state.cardBills[m]?.[it.accountId];
+        const ratio = limit && bill !== undefined ? bill / limit : 0;
+        extra = `<div class="rv-card">
+          <label class="inline-label">Bill amount <input type="number" step="0.01" min="0" inputmode="decimal" data-card-bill="${it.accountId}" value="${bill ?? ''}" placeholder="0.00"></label>
+          ${limit ? `<div class="rv-limit"><div class="bar-track"><div class="bar-fill ${bill !== undefined ? (ratio > 1 ? 'over' : 'done') : ''}" style="width:${Math.min(1, ratio) * 100}%"></div></div>
+            <span class="muted">${bill !== undefined ? `${esc(money(bill))} of your ${esc(money(limit))} limit${ratio > 1 ? ` · <span class="neg">${esc(money(bill - limit))} over</span>` : ' · <span class="pos">under ✓</span>'}` : `Limit: ${esc(money(limit))}`}</span></div>` : ''}
+        </div>`;
+      } else {
+        box = `<input type="checkbox" data-rv-item="${it.id}" ${done ? 'checked' : ''} ${auto && it.type !== 'backup' ? 'disabled' : ''}>`;
+      }
+      if (it.type === 'checkin') extra = `<button class="small" data-goto="checkin">${done ? 'View check-in' : 'Open check-in'}</button>`;
+      if (it.type === 'import') extra = `<button class="small" data-goto="spending">Open Spending</button>`;
+      if (it.type === 'goals') extra = `<button class="small" data-goto="goals">Open Goals</button>`;
+      if (it.type === 'backup') extra = `<button class="small export-backup">Download backup</button>`;
+      if (it.type === 'note') extra = `<textarea data-rv-note rows="3" placeholder="What went well? What will I do differently next month?">${esc(rm.note || '')}</textarea>`;
+      return `<div class="rv-item ${done ? 'done' : ''}">
+        <div class="rv-line">
+          <label class="check">${box} <span>${esc(it.text)}</span></label>
+          <button class="icon-btn rv-del" data-rv-del="${it.id}" title="Remove this step" aria-label="Remove step">✕</button>
+        </div>
+        ${auto ? `<p class="muted rv-hint">${auto}</p>` : ''}
+        ${extra}
+      </div>`;
+    };
+
+    $('#rv-sections').innerHTML = Object.entries(REVIEW_SECTIONS).map(([key, title], si) => {
+      const items = state.review.items.filter((i) => i.section === key);
+      if (!items.length) return '';
+      const d = items.filter((i) => isReviewDone(i, m)).length;
+      return `<div class="card rv-section"><h2><span class="rv-num">${si + 1}</span> ${esc(title)} <span class="muted right">${d}/${items.length}</span></h2>${items.map(itemHtml).join('')}</div>`;
+    }).join('');
+
+    // History
+    const months = new Set([...Object.keys(state.review.months), ...Object.keys(state.snapshots), ...Object.keys(state.cardBills), ...Object.keys(state.paidInFull)]);
+    const past = [...months].filter((x) => x !== m && x <= thisMonth()).sort().reverse().slice(0, 12);
+    $('#rv-history').innerHTML = past.length ? `<ul class="list rv-hist">${past.map((x) => {
+      const pp = reviewProgress(x);
+      const note = (state.review.months[x]?.note || '').trim();
+      const cards = cardAccounts().map((a) => {
+        const v = state.cardBills[x]?.[a.id];
+        if (v === undefined) return '';
+        const limit = Number(a.monthlyLimit) || 0;
+        return `${esc(a.name)} ${esc(money(v))}${limit ? (v <= limit ? ' ✓' : ' ✗') : ''}`;
+      }).filter(Boolean).join(' · ');
+      return `<li><div class="bill-main"><strong>${esc(monthLong(x))}</strong>
+          <span class="muted">${pp.done}/${pp.total} steps${cards ? ' · ' + cards : ''}</span>
+          ${note ? `<span class="rv-note-past">“${esc(note)}”</span>` : ''}</div>
+          <button class="small" data-rv-open="${x}">Open</button></li>`;
+    }).join('')}</ul>` : empty('Your past monthly reviews will show up here.');
+  }
+
+  rvMonth.addEventListener('input', renderReview);
+  $('#view-review').addEventListener('change', (e) => {
+    const t = e.target;
+    const m = rvMonth.value || thisMonth();
+    if (t.dataset.rvItem) {
+      reviewMonth(m).done[t.dataset.rvItem] = t.checked;
+      save();
+    } else if (t.dataset.cardBill) {
+      state.cardBills[m] = { ...(state.cardBills[m] || {}) };
+      if (t.value === '') delete state.cardBills[m][t.dataset.cardBill];
+      else state.cardBills[m][t.dataset.cardBill] = Finance.round2(Number(t.value));
+      save();
+      const a = state.accounts.find((x) => x.id === t.dataset.cardBill);
+      const v = state.cardBills[m][t.dataset.cardBill];
+      if (v !== undefined && Number(a?.monthlyLimit) > 0) toast(v <= a.monthlyLimit ? `Under your ${money(a.monthlyLimit)} limit. Well done! 🎉` : `${money(v - a.monthlyLimit)} over your limit. Let's aim lower next month.`);
+    } else if (t.matches('[data-rv-note]')) {
+      reviewMonth(m).note = t.value;
+      save();
+    }
+  });
+  // Save the note while typing (without redrawing, so the cursor stays put).
+  $('#view-review').addEventListener('input', (e) => {
+    if (!e.target.matches('[data-rv-note]')) return;
+    reviewMonth(rvMonth.value || thisMonth()).note = e.target.value;
+    persist();
+  });
+  $('#view-review').addEventListener('click', (e) => {
+    const del = e.target.dataset.rvDel, open = e.target.dataset.rvOpen;
+    if (del) {
+      const it = state.review.items.find((i) => i.id === del);
+      if (it && confirm(`Remove "${it.text}" from your monthly checklist?`)) {
+        state.review.items = state.review.items.filter((i) => i.id !== del);
+        if (it.type === 'card') toast('Tip: to stop tracking this card, untick "pay in full" and clear the limit on the account.');
+        save();
+      }
+    } else if (open) {
+      rvMonth.value = open;
+      renderReview();
+      window.scrollTo(0, 0);
+    }
+  });
+  $('#rv-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const text = f.text.value.trim();
+    if (!text) return;
+    const items = state.review.items;
+    // Insert at the end of its section.
+    let at = -1;
+    items.forEach((i, idx) => { if (i.section === f.section.value) at = idx; });
+    const item = { id: uid(), section: f.section.value, type: 'task', text };
+    if (at < 0) items.push(item); else items.splice(at + 1, 0, item);
+    f.text.value = '';
+    save();
+    toast('Step added');
+  });
+
+  // ---- Calendar reminder (.ics) ------------------------------------------
+
+  function downloadReminder() {
+    const next = Finance.addMonthsToKey(thisMonth(), 1).replace('-', '');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+    const ics = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Finance Tracker//Monthly review//EN', 'CALSCALE:GREGORIAN',
+      'BEGIN:VEVENT',
+      `UID:monthly-money-review-${uid()}@finance-tracker`,
+      `DTSTAMP:${stamp}`,
+      `DTSTART:${next}01T090000`,
+      `DTEND:${next}01T093000`,
+      'RRULE:FREQ=MONTHLY;BYMONTHDAY=1',
+      'SUMMARY:Monthly money review',
+      'DESCRIPTION:Open Finance Tracker and go through your monthly review (about 30 minutes).',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:Monthly money review', 'TRIGGER:PT0M', 'END:VALARM',
+      'END:VEVENT', 'END:VCALENDAR',
+    ].join('\r\n');
+    download('monthly-money-review.ics', ics, 'text/calendar');
+    toast('Open the downloaded file to add it to your calendar.');
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.ics-btn')) downloadReminder();
+    if (e.target.closest('.export-backup')) exportBackup();
+  });
+
   // ---- Check-in --------------------------------------------------------
 
   const ciMonth = $('#ci-month');
@@ -313,7 +663,7 @@
     const row = (a) => {
       const v = a.id in saved ? saved[a.id] : carried[a.id];
       return `<div class="ci-row">
-        <span class="ci-name">${esc(a.name)}${a.joint ? ' <span class="pill">joint</span>' : ''}</span>
+        <span class="ci-name">${esc(a.name)}${a.joint ? ' <span class="pill">joint</span>' : ''}${a.group === 'retirement' ? ' <span class="pill">retirement</span>' : a.group === 'investments' ? ' <span class="pill">invested</span>' : ''}</span>
         <input type="number" step="0.01" inputmode="decimal" data-acct="${a.id}" value="${v ?? ''}" placeholder="0" aria-label="${esc(a.name)} balance">
         <button type="button" class="icon-btn" data-edit-acct="${a.id}" title="Rename">Edit</button>
         <button type="button" class="icon-btn" data-remove-acct="${a.id}" title="Remove">✕</button>
@@ -387,6 +737,7 @@
       const f = $('#acct-form');
       f.id.value = a.id; f.name.value = a.name; f.type.value = a.type;
       f.joint.checked = !!a.joint; f.payInFull.checked = !!a.payInFull;
+      f.group.value = a.group || 'cash'; f.monthlyLimit.value = a.monthlyLimit || '';
       syncAcctForm();
       $('#acct-form-title').textContent = 'Edit account';
       $('#acct-cancel').hidden = false;
@@ -410,7 +761,9 @@
 
   const acctForm = $('#acct-form');
   function syncAcctForm() {
-    $('.pif-only', acctForm).hidden = acctForm.type.value !== 'liability';
+    const liab = acctForm.type.value === 'liability';
+    $$('.pif-only', acctForm).forEach((el) => { el.hidden = !liab; });
+    $$('.asset-only', acctForm).forEach((el) => { el.hidden = liab; });
   }
   acctForm.type.addEventListener('change', syncAcctForm);
   function resetAcctForm() {
@@ -426,6 +779,8 @@
     const fields = {
       name: acctForm.name.value.trim(), type: acctForm.type.value, joint: acctForm.joint.checked,
       payInFull: acctForm.type.value === 'liability' && acctForm.payInFull.checked,
+      group: acctForm.type.value === 'asset' ? acctForm.group.value : undefined,
+      monthlyLimit: acctForm.type.value === 'liability' && Number(acctForm.monthlyLimit.value) > 0 ? Number(acctForm.monthlyLimit.value) : undefined,
     };
     if (existing) Object.assign(existing, fields);
     else state.accounts.push({ id: uid(), ...fields });
@@ -443,24 +798,40 @@
 
   function renderBills() {
     const today = localToday();
-    const t = Finance.billTotals(state.bills);
+    const m = thisMonth();
+    const t = Finance.billTotals(state.bills, 'bill', m);
     $('#bills-month').textContent = money(t.perMonth);
     $('#bills-year').textContent = `${money(t.perYear)} per year`;
-    $('#saving-month').textContent = money(Finance.billTotals(state.bills, 'saving').perMonth);
-    $('#investing-month').textContent = money(Finance.billTotals(state.bills, 'investing').perMonth);
+    $('#saving-month').textContent = money(Finance.billTotals(state.bills, 'saving', m).perMonth);
+    $('#investing-month').textContent = money(Finance.billTotals(state.bills, 'investing', m).perMonth);
+    const plan = Finance.monthlyPlan(state.bills, state.accounts, m);
+    const later = nextDifferentPlan(plan);
+    $('#income-month').textContent = money(plan.income);
+    $('#income-sub').textContent = later && later.income !== plan.income ? `${money(later.income)} from ${monthShort(later.month)}` : '';
 
-    const rows = state.bills.map((b) => ({ b, due: Finance.nextDueDate(b, today) })).sort((a, z) => (a.due || '').localeCompare(z.due || ''));
+    const assetOpts = activeAccounts().filter((a) => a.type !== 'liability').map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    const prevTo = billForm.toAccountId.value;
+    billForm.toAccountId.innerHTML = '<option value="">(not set)</option>' + assetOpts;
+    billForm.toAccountId.value = prevTo;
+
+    const rows = state.bills
+      .filter((b) => !b.endMonth || b.endMonth >= m)
+      .map((b) => ({ b, due: Finance.nextDueDate(b, b.startMonth && `${b.startMonth}-01` > today ? `${b.startMonth}-01` : today) }))
+      .sort((a, z) => (a.due || '').localeCompare(z.due || ''));
+    const span = (b) => [b.startMonth ? `from ${monthShort(b.startMonth)}` : '', b.endMonth ? `until ${monthShort(b.endMonth)}` : ''].filter(Boolean).join(' ');
+    const toName = (b) => { const a = state.accounts.find((x) => x.id === b.toAccountId); return a ? ` → ${a.name}` : ''; };
     const item = ({ b, due }) => `
       <li>
         <div class="bill-main"><strong>${esc(b.name)}</strong>
-          <span class="muted">${esc(Finance.FREQUENCIES[b.frequency]?.label || '')} · next ${esc(dueLabel(due))}${(b.kind || 'bill') === 'bill' ? ` · <span class="pill">${esc(b.category)}</span>` : ''}</span></div>
-        <div class="bill-amt">${b.variable ? '<span class="muted">full balance</span>' : `<span class="amt">${esc(money(b.amount))}</span>`}
+          <span class="muted">${esc(Finance.FREQUENCIES[b.frequency]?.label || '')} · next ${esc(dueLabel(due))}${span(b) ? ` · ${esc(span(b))}` : ''}${esc(toName(b))}${(b.kind || 'bill') === 'bill' ? ` · <span class="pill">${esc(b.category)}</span>` : ''}</span></div>
+        <div class="bill-amt">${b.variable ? '<span class="muted">full balance</span>' : `<span class="amt ${b.kind === 'income' ? 'pos' : ''}">${b.kind === 'income' ? '+' : ''}${esc(money(b.amount))}</span>`}
           ${!b.variable && b.frequency !== 'monthly' ? `<span class="muted">${esc(money(Finance.monthlyCost(b)))}/mo</span>` : ''}</div>
         <div class="row-actions"><button class="icon-btn" data-edit-bill="${b.id}">Edit</button><button class="icon-btn" data-del-bill="${b.id}">✕</button></div>
       </li>`;
     const groups = [
+      ['Income', rows.filter(({ b }) => b.kind === 'income')],
       ['Bills & expenses', rows.filter(({ b }) => (b.kind || 'bill') === 'bill')],
-      ['Automatic saving & investing', rows.filter(({ b }) => (b.kind || 'bill') !== 'bill')],
+      ['Automatic saving & investing', rows.filter(({ b }) => ['saving', 'investing'].includes(b.kind))],
     ].filter(([, list]) => list.length);
     $('#bill-list').innerHTML = rows.length
       ? groups.map(([title, list]) => `<h3>${title}</h3><ul class="list bills">${list.map(item).join('')}</ul>`).join('')
@@ -473,6 +844,9 @@
   function syncBillForm() {
     const f = billForm;
     $('.bill-only', f).hidden = f.kind.value !== 'bill';
+    $('.to-only', f).hidden = !['saving', 'investing'].includes(f.kind.value);
+    f.variable.closest('label').hidden = f.kind.value !== 'bill';
+    if (f.kind.value !== 'bill') f.variable.checked = false;
     f.amount.required = !f.variable.checked;
     f.amount.disabled = f.variable.checked;
     if (f.variable.checked) f.amount.value = '';
@@ -482,6 +856,7 @@
 
   function resetBillForm() {
     billForm.reset(); billForm.id.value = '';
+    billForm.kind.value = 'bill';
     billForm.dueDate.value = localToday();
     $('#bill-form-title').textContent = 'Add a recurring payment';
     $('#bill-cancel').hidden = true;
@@ -492,11 +867,15 @@
     const f = billForm;
     const kind = f.kind.value;
     const bill = {
-      id: f.id.value || uid(), name: f.name.value.trim(), kind, variable: f.variable.checked,
-      amount: f.variable.checked ? 0 : Finance.round2(Number(f.amount.value)),
+      id: f.id.value || uid(), name: f.name.value.trim(), kind, variable: kind === 'bill' && f.variable.checked,
+      amount: kind === 'bill' && f.variable.checked ? 0 : Finance.round2(Number(f.amount.value)),
       frequency: f.frequency.value, dueDate: f.dueDate.value,
-      category: kind === 'bill' ? f.category.value : kind === 'saving' ? 'Saving' : 'Investing',
+      category: kind === 'bill' ? f.category.value : { saving: 'Saving', investing: 'Investing', income: 'Income' }[kind],
+      toAccountId: ['saving', 'investing'].includes(kind) ? f.toAccountId.value : '',
+      startMonth: f.startMonth.value || '', endMonth: f.endMonth.value || '',
     };
+    if (bill.startMonth && bill.endMonth && bill.endMonth < bill.startMonth) { toast('The end month is before the start month'); return; }
+    if (bill.startMonth && bill.dueDate.slice(0, 7) < bill.startMonth) bill.dueDate = `${bill.startMonth}${bill.dueDate.slice(7)}`;
     const i = state.bills.findIndex((b) => b.id === bill.id);
     if (i >= 0) state.bills[i] = bill; else state.bills.push(bill);
     resetBillForm();
@@ -508,7 +887,8 @@
     const editId = e.target.dataset.editBill, delId = e.target.dataset.delBill;
     if (editId) {
       const b = state.bills.find((x) => x.id === editId);
-      for (const k of ['id', 'name', 'amount', 'frequency', 'dueDate']) billForm[k].value = b[k];
+      for (const k of ['id', 'name', 'amount', 'frequency', 'dueDate', 'startMonth', 'endMonth']) billForm[k].value = b[k] ?? '';
+      billForm.toAccountId.value = b.toAccountId || '';
       billForm.kind.value = b.kind || 'bill';
       billForm.variable.checked = !!b.variable;
       if (BILL_CATEGORIES.includes(b.category)) billForm.category.value = b.category;
@@ -526,7 +906,8 @@
     if (billForm.id.value) return;
     const n = billForm.name.value.toLowerCase();
     if (billForm.kind.value === 'bill') {
-      if (/invest|brokerage|401|ira\b|etf|stocks|index fund|robo/.test(n)) billForm.kind.value = 'investing';
+      if (/pay ?check|salary|wages|payroll/.test(n)) billForm.kind.value = 'income';
+      else if (/invest|brokerage|401|ira\b|etf|stocks|index fund|robo|fidelity|vanguard/.test(n)) billForm.kind.value = 'investing';
       else if (/saving|transfer to|emergency fund/.test(n)) billForm.kind.value = 'saving';
       syncBillForm();
     }
@@ -550,37 +931,61 @@
 
     // My goals checklist
     const list = (horizon) => {
-      const items = state.todos.filter((t) => (t.horizon === 'long') === (horizon === 'long'));
+      const items = state.todos.filter((t) => (t.horizon === 'long') === (horizon === 'long'))
+        .sort((a, b) => a.done - b.done); // keep the user's order; finished goals go last
       return items.length ? items.map((t) => `<li class="${t.done ? 'done' : ''}">
-        <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}</span></label>
+        <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}${todoMeta(t)}</span></label>
         <span class="row-actions"><button class="icon-btn" data-edit-todo="${t.id}">Edit</button><button class="icon-btn" data-del-todo="${t.id}" title="Delete">✕</button></span>
-      </li>`).join('') : `<li class="empty">Nothing here yet.</li>`;
+      </li>`).join('') : '<li class="empty">Nothing here yet.</li>';
     };
     $('#todo-short').innerHTML = list('short');
     $('#todo-long').innerHTML = list('long');
 
-    // Account picker for savings goals
-    const prev = goalForm.accountId.value;
-    goalForm.accountId.innerHTML = '<option value="">No, I\'ll update it myself</option>'
-      + activeAccounts().filter((a) => a.type !== 'liability').map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-    goalForm.accountId.value = activeAccounts().some((a) => a.id === prev) ? prev : '';
+    // Account picker for savings goals (keeps ticks while the form is open)
+    const ticked = new Set($$('#goal-accounts input:checked').map((i) => i.value));
+    $('#goal-accounts').innerHTML = activeAccounts().filter((a) => a.type !== 'liability')
+      .map((a) => `<label class="check"><input type="checkbox" value="${a.id}" ${ticked.has(a.id) ? 'checked' : ''}> ${esc(a.name)}</label>`).join('')
+      || '<span class="muted">Add accounts on the Check-in tab first.</span>';
     syncGoalForm();
 
     $('#goal-cards').innerHTML = state.goals.length ? state.goals.map((goal) => {
       const g = { ...goal, saved: Finance.goalSaved(goal, state.accounts, state.snapshots, month) };
-      const linked = goal.accountId && state.accounts.find((a) => a.id === goal.accountId);
+      const ids = Finance.goalAccountIds(goal);
+      const linked = ids.map((id) => state.accounts.find((a) => a.id === id)).filter(Boolean);
       const p = Finance.goalProgress(g, today);
-      let detail;
-      if (p.done) detail = '<span class="pos">Goal reached! 🎉</span>';
-      else if (p.overdue) detail = `<span class="neg">Target date passed</span> · ${esc(money(p.remaining))} to go`;
-      else if (p.perMonth != null) detail = `${esc(money(p.remaining))} to go · save <strong>${esc(money(p.perMonth))}/month</strong> to reach it by ${esc(monthLong(g.targetDate.slice(0, 7)))}`;
-      else detail = `${esc(money(p.remaining))} to go`;
+      const gp = Finance.goalPlan(g, g.saved, state.bills, today);
+      const lines = [];
+      if (!p.done && g.targetDate) {
+        lines.push(`<p class="goal-verdict ${gp.onTrack ? 'ok' : 'bad'}">${gp.onTrack
+          ? `✓ On track: projected <strong>${esc(money(gp.projected))}</strong> by ${esc(monthLong(g.targetDate.slice(0, 7)))}${gp.surplus ? ` (${esc(money(gp.surplus))} to spare)` : ''}`
+          : `Short by <strong>${esc(money(gp.shortfall))}</strong>. Save about <strong>${esc(money(gp.extraPerMonth))}/month</strong> more to reach it by ${esc(monthLong(g.targetDate.slice(0, 7)))}`}</p>`);
+        const parts = [`${esc(money(g.saved))} now`];
+        if (gp.auto) parts.push(`${esc(money(gp.auto))} from automatic transfers (${esc(money(gp.autoPerMonth))}/month)`);
+        if (gp.lumps) parts.push(`${esc(money(gp.lumps))} expected`);
+        lines.push(`<p class="muted">How we got there: ${parts.join(' + ')}${gp.lumps || gp.auto ? ` = ${esc(money(gp.projected))}` : ''}.</p>`);
+      } else if (!p.done) {
+        lines.push(`<p class="muted">${goalStatusLine(g, false)}</p>`);
+        if (gp.autoPerMonth === 0) {
+          const left = Finance.monthlyPlan(state.bills, state.accounts, month);
+          const later = nextDifferentPlan(left);
+          const spare = Math.max(left.left, later ? later.left : 0);
+          if (spare > 0) lines.push(`<p class="muted">💡 If you moved your ${esc(money(spare))} monthly leftover here, you'd reach it in about <strong>${Math.ceil(Math.max(0, p.remaining - gp.lumps) / spare)} months</strong>.</p>`);
+        }
+      } else lines.push('<p class="pos">Goal reached! 🎉</p>');
+      if (g.isSafetyNet && g.targetDate) {
+        const sn = safetyNetInfo();
+        if (sn) lines.push(`<p class="muted">Covers ${sn.months} months of costs (target ${sn.targetMonths}).</p>`);
+      }
+      const expected = (goal.expected || []).map((x, i) => ({ ...x, i })).filter((x) => !x.received);
       return `<div class="card goal">
         <div class="goal-head"><h2>${esc(g.name)}</h2><span class="goal-pct">${Math.round(p.ratio * 100)}%</span></div>
         <div class="bar-track big"><div class="bar-fill ${p.done ? 'done' : ''}" style="width:${(p.ratio * 100).toFixed(1)}%"></div></div>
-        <p class="goal-amounts"><strong>${esc(money(g.saved))}</strong> of ${esc(money(g.target))}</p>
-        <p class="muted">${detail}</p>
-        ${linked ? `<p class="muted linked">Tracks your <strong>${esc(linked.name)}</strong> balance, so it updates when you do your check-in.</p>`
+        <p class="goal-amounts"><strong>${esc(money(g.saved))}</strong> of ${esc(money(g.target))}${g.targetDate ? ` · by ${esc(monthLong(g.targetDate.slice(0, 7)))}` : ''}</p>
+        ${lines.join('')}
+        ${expected.length ? `<div class="expected"><span class="field-label">Expected money</span>${expected.map((x) => `<div class="exp-row">
+            <span>${esc(x.label || 'Expected')} · ${esc(money(x.amount))} · ${esc(dayLabel(x.date))}${x.date < today ? ' <span class="neg">(date passed)</span>' : ''}</span>
+            <button class="small" data-received="${goal.id}:${x.i}" title="Mark as arrived. The money is now in your accounts, so it's counted from your check-in instead.">Arrived ✓</button></div>`).join('')}</div>` : ''}
+        ${linked.length ? `<p class="muted linked">Tracks ${linked.map((a) => `<strong>${esc(a.name)}</strong>`).join(' + ')}. Updates with your check-in.</p>`
           : `<form class="goal-add" data-goal="${g.id}">
           <input type="number" step="0.01" inputmode="decimal" name="delta" placeholder="Amount" aria-label="Amount to add" required>
           <button type="submit" name="op" value="add">Add</button>
@@ -588,7 +993,7 @@
         </form>`}
         <div class="row-actions left"><button class="icon-btn" data-edit-goal="${g.id}">Edit</button><button class="icon-btn" data-del-goal="${g.id}">Delete</button></div>
       </div>`;
-    }).join('') : `<div class="card">${empty('No savings goals yet. Examples: a safety net (3–6 months of expenses), a house deposit, a holiday.')}</div>`;
+    }).join('') : `<div class="card">${empty('No savings goals yet. Examples: a safety net (3–6 months of costs), a down payment, a holiday.')}</div>`;
   }
 
   // ---- My goals (checklist) ----
@@ -603,35 +1008,60 @@
     e.preventDefault();
     const text = todoForm.text.value.trim();
     if (!text) return;
+    const fields = { text, horizon: todoForm.horizon.value, dueDate: todoForm.dueDate.value || '', note: todoForm.note.value.trim() };
     const existing = state.todos.find((t) => t.id === todoForm.id.value);
-    if (existing) Object.assign(existing, { text, horizon: todoForm.horizon.value });
-    else state.todos.push({ id: uid(), text, horizon: todoForm.horizon.value, done: false });
+    if (existing) Object.assign(existing, fields);
+    else state.todos.push({ id: uid(), done: false, ...fields });
     resetTodoForm();
     save();
   });
   $('#todo-cancel').addEventListener('click', resetTodoForm);
   $('#view-goals').addEventListener('click', (e) => {
-    const editId = e.target.dataset.editTodo, delId = e.target.dataset.delTodo;
+    const editId = e.target.dataset.editTodo, delId = e.target.dataset.delTodo, rec = e.target.dataset.received;
     if (editId) {
       const t = state.todos.find((x) => x.id === editId);
       todoForm.id.value = t.id; todoForm.text.value = t.text; todoForm.horizon.value = t.horizon || 'short';
+      todoForm.dueDate.value = t.dueDate || ''; todoForm.note.value = t.note || '';
       todoForm.querySelector('button[type=submit]').textContent = 'Save';
       $('#todo-cancel').hidden = false;
+      todoForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
       todoForm.text.focus();
     } else if (delId && confirm('Delete this goal?')) {
       state.todos = state.todos.filter((t) => t.id !== delId);
       save();
+    } else if (rec) {
+      const [gid, i] = rec.split(':');
+      const g = state.goals.find((x) => x.id === gid);
+      const x = g?.expected?.[Number(i)];
+      if (!x) return;
+      if (!confirm(`Mark "${x.label || 'expected money'}" (${money(x.amount)}) as arrived?\n\nAfter this, it's counted through your account balances. Remember to update them in your check-in.`)) return;
+      x.received = true;
+      save();
+      toast('Marked as arrived. Update your balances in the check-in.');
     }
   });
 
   // ---- Savings goals ----
   function syncGoalForm() {
-    $('.manual-only', goalForm).hidden = !!goalForm.accountId.value;
+    $('.manual-only', goalForm).hidden = $$('#goal-accounts input:checked').length > 0;
   }
-  goalForm.accountId.addEventListener('change', syncGoalForm);
+  $('#goal-accounts').addEventListener('change', syncGoalForm);
+
+  function expectedRow(x = {}) {
+    return `<div class="exp-edit">
+      <input type="text" data-exp="label" placeholder="e.g. Year-end bonus" value="${esc(x.label || '')}" aria-label="What">
+      <input type="number" data-exp="amount" step="0.01" min="0" placeholder="Amount" value="${x.amount ?? ''}" aria-label="Amount">
+      <input type="date" data-exp="date" value="${esc(x.date || '')}" aria-label="When">
+      <button type="button" class="icon-btn" data-exp-del title="Remove">✕</button>
+    </div>`;
+  }
+  $('#goal-add-expected').addEventListener('click', () => $('#goal-expected').insertAdjacentHTML('beforeend', expectedRow()));
+  $('#goal-expected').addEventListener('click', (e) => { if (e.target.matches('[data-exp-del]')) e.target.closest('.exp-edit').remove(); });
 
   function resetGoalForm() {
     goalForm.reset(); goalForm.id.value = '';
+    $$('#goal-accounts input').forEach((i) => { i.checked = false; });
+    $('#goal-expected').innerHTML = '';
     $('#goal-form-title').textContent = 'Add a savings goal';
     $('#goal-cancel').hidden = true;
     syncGoalForm();
@@ -639,10 +1069,21 @@
   goalForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = goalForm;
+    const old = state.goals.find((g) => g.id === f.id.value);
+    const expected = $$('#goal-expected .exp-edit').map((row) => ({
+      label: $('[data-exp=label]', row).value.trim(),
+      amount: Finance.round2(Number($('[data-exp=amount]', row).value) || 0),
+      date: $('[data-exp=date]', row).value,
+    })).filter((x) => x.amount > 0 && x.date);
+    // Keep amounts already marked as arrived.
+    for (const x of old?.expected || []) if (x.received) expected.push(x);
     const goal = {
       id: f.id.value || uid(), name: f.name.value.trim(), target: Finance.round2(Number(f.target.value)),
-      saved: Finance.round2(Number(f.saved.value) || 0), targetDate: f.targetDate.value || '', accountId: f.accountId.value || '',
+      saved: Finance.round2(Number(f.saved.value) || 0), targetDate: f.targetDate.value || '',
+      accountIds: $$('#goal-accounts input:checked').map((i) => i.value),
+      expected, isSafetyNet: f.isSafetyNet.checked,
     };
+    if (goal.isSafetyNet) for (const g of state.goals) if (g.id !== goal.id) g.isSafetyNet = false;
     const i = state.goals.findIndex((g) => g.id === goal.id);
     if (i >= 0) state.goals[i] = goal; else state.goals.push(goal);
     resetGoalForm();
@@ -666,7 +1107,11 @@
     const editId = e.target.dataset.editGoal, delId = e.target.dataset.delGoal;
     if (editId) {
       const g = state.goals.find((x) => x.id === editId);
-      for (const k of ['id', 'name', 'target', 'saved', 'targetDate', 'accountId']) goalForm[k].value = g[k] ?? '';
+      for (const k of ['id', 'name', 'target', 'saved', 'targetDate']) goalForm[k].value = g[k] ?? '';
+      goalForm.isSafetyNet.checked = !!g.isSafetyNet;
+      const ids = new Set(Finance.goalAccountIds(g));
+      $$('#goal-accounts input').forEach((i) => { i.checked = ids.has(i.value); });
+      $('#goal-expected').innerHTML = (g.expected || []).filter((x) => !x.received).map(expectedRow).join('');
       syncGoalForm();
       $('#goal-form-title').textContent = 'Edit savings goal';
       $('#goal-cancel').hidden = false;
@@ -848,11 +1293,13 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  $('#export-json').addEventListener('click', () => {
+  function exportBackup() {
     state.lastBackup = localToday();
     download(`finance-backup-${localToday()}.json`, JSON.stringify(state, null, 2), 'application/json');
     save();
-  });
+    toast('Backup downloaded. Keep it somewhere safe, like iCloud Drive.');
+  }
+  $('#export-json').addEventListener('click', exportBackup);
 
   $('#import-json').addEventListener('change', async (e) => {
     const file = e.target.files[0]; e.target.value = '';
@@ -870,7 +1317,7 @@
   $('#reset-all').addEventListener('click', () => {
     if (!confirm('Erase ALL your data? This cannot be undone. Consider downloading a backup first.')) return;
     const currency = state.settings.currency;
-    state = emptyState();
+    state = normalize(emptyState());
     state.settings.currency = currency;
     save();
     toast('All data erased');
@@ -878,7 +1325,7 @@
 
   $('#load-sample').addEventListener('click', () => {
     if ((state.accounts.length || state.bills.length || state.goals.length) && !confirm('Replace your current data with sample data?')) return;
-    state = sampleData();
+    state = normalize(sampleData());
     save();
     showView('overview');
     toast('Sample data loaded. Use "Erase all data" when you\'re ready to start for real.');
@@ -891,8 +1338,8 @@
     s.accounts = [
       { id: ids.bank, name: 'Bank account', type: 'asset' },
       { id: ids.sav, name: 'Savings', type: 'asset' },
-      { id: ids.inv, name: 'Investments', type: 'asset' },
-      { id: ids.cc, name: 'Credit card', type: 'liability', payInFull: true },
+      { id: ids.inv, name: 'Investments', type: 'asset', group: 'investments' },
+      { id: ids.cc, name: 'Credit card', type: 'liability', payInFull: true, monthlyLimit: 1500 },
       { id: ids.car, name: 'Car loan', type: 'liability' },
     ];
     Finance.lastMonths(thisMonth(), 12).forEach((m, i) => {
@@ -919,10 +1366,12 @@
       { name: 'Car loan payment', amount: 310, frequency: 'monthly', dueDate: day(25), category: 'Loans & credit' },
       { name: 'Amazon Prime', amount: 95, frequency: 'yearly', dueDate: Finance.addDays(t, 12), category: 'Subscriptions' },
       { name: 'Credit card: pay in full', amount: 0, variable: true, frequency: 'monthly', dueDate: day(1), category: 'Loans & credit' },
-      { name: 'Transfer to savings', amount: 450, kind: 'saving', frequency: 'monthly', dueDate: day(2), category: 'Saving' },
-      { name: 'Index fund', amount: 200, kind: 'investing', frequency: 'monthly', dueDate: day(5), category: 'Investing' },
+      { name: 'Transfer to savings', amount: 450, kind: 'saving', frequency: 'monthly', dueDate: day(2), category: 'Saving', toAccountId: ids.sav },
+      { name: 'Index fund', amount: 200, kind: 'investing', frequency: 'monthly', dueDate: day(5), category: 'Investing', toAccountId: ids.inv },
+      { name: 'Paycheck', amount: 3400, kind: 'income', frequency: 'monthly', dueDate: day(1), category: 'Income' },
     ].map((b) => ({ id: uid(), kind: 'bill', ...b }));
     for (const m of Finance.lastMonths(Finance.addMonthsToKey(thisMonth(), -1), 4)) s.paidInFull[m] = { [ids.cc]: true };
+    Finance.lastMonths(Finance.addMonthsToKey(thisMonth(), -1), 5).forEach((m, i) => { s.cardBills[m] = { [ids.cc]: [1720, 1480, 1390, 1610, 1350][i] }; });
     s.todos = [
       { text: 'Build a 3-month emergency fund', horizon: 'short', done: false },
       { text: 'Cancel subscriptions I don\'t use', horizon: 'short', done: true },
@@ -931,7 +1380,7 @@
       { text: 'Pay off the car loan', horizon: 'long', done: false },
     ].map((x) => ({ id: uid(), ...x }));
     s.goals = [
-      { id: uid(), name: 'Emergency fund', target: 12000, saved: 0, accountId: ids.sav, targetDate: Finance.addDays(t, 270) },
+      { id: uid(), name: 'Emergency fund', target: 12000, saved: 0, accountIds: [ids.sav], targetDate: Finance.addDays(t, 270), isSafetyNet: true },
       { id: uid(), name: 'Summer holiday', target: 2000, saved: 650, targetDate: Finance.addDays(t, 200) },
       { id: uid(), name: 'New laptop', target: 1200, saved: 1200, targetDate: '' },
     ];
@@ -956,6 +1405,11 @@
   // ---- Init ------------------------------------------------------------
 
   ciMonth.value = thisMonth();
+  rvMonth.value = thisMonth();
+  // Opening the review from anywhere starts at the current month.
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-goto="review"], .tab[data-view="review"]') && rvMonth.value !== thisMonth()) { rvMonth.value = thisMonth(); renderReview(); }
+  }, true);
   resetBillForm();
   render();
   try {

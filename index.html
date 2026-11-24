@@ -17,6 +17,7 @@
     <h1>Finance Tracker</h1>
     <nav class="tabs">
       <button class="tab active" data-view="overview">Overview</button>
+      <button class="tab" data-view="review">Monthly review</button>
       <button class="tab" data-view="checkin">Check-in</button>
       <button class="tab" data-view="bills">Recurring</button>
       <button class="tab" data-view="goals">Goals</button>
@@ -28,19 +29,20 @@
   <main>
     <!-- Overview -->
     <section id="view-overview" class="view active">
-      <div id="checkin-nudge" class="nudge" hidden>
-        <span id="checkin-nudge-text"></span>
-        <button class="primary" data-goto="checkin">Do check-in</button>
-      </div>
+      <div id="ov-month" class="nudge"></div>
       <div class="stats">
         <div class="stat"><span class="label">Net worth</span><span class="value" id="ov-networth">—</span><span class="sub" id="ov-networth-sub"></span></div>
-        <div class="stat"><span class="label">Bills per month</span><span class="value" id="ov-bills">—</span><span class="sub" id="ov-bills-sub"></span></div>
+        <div class="stat"><span class="label" id="ov-left-label">Left over each month</span><span class="value" id="ov-left">—</span><span class="sub" id="ov-left-sub"></span></div>
         <div class="stat"><span class="label">Saved toward goals</span><span class="value" id="ov-goals">—</span><span class="sub" id="ov-goals-sub"></span></div>
         <div class="stat"><span class="label" id="ov-spent-label">Spent</span><span class="value" id="ov-spent">—</span><span class="sub" id="ov-spent-sub"></span></div>
       </div>
       <div class="grid2">
         <div class="card"><h2>My goals <button class="link right" data-goto="goals">Edit</button></h2><div id="ov-todos"></div></div>
-        <div class="card" id="ov-pif-card" hidden><h2>Credit card paid in full</h2><div id="ov-pif"></div></div>
+        <div class="card" id="ov-pif-card" hidden><h2>Credit card</h2><div id="ov-pif"></div></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Savings goals <button class="link right" data-goto="goals">Details</button></h2><div id="ov-goal-list"></div></div>
+        <div class="card"><h2 id="ov-plan-title">Monthly plan <button class="link right" data-goto="bills">Edit</button></h2><div id="ov-plan"></div></div>
       </div>
       <div class="card">
         <h2>Net worth over time</h2>
@@ -48,9 +50,42 @@
       </div>
       <div class="grid2">
         <div class="card"><h2>Coming up (next 30 days) <button class="link right" data-goto="bills">All</button></h2><div id="ov-upcoming"></div></div>
-        <div class="card"><h2>Savings goals <button class="link right" data-goto="goals">Manage</button></h2><div id="ov-goal-list"></div></div>
+        <div class="card"><h2 id="ov-spending-title">Spending <button class="link right" data-goto="spending">Details</button></h2><div id="ov-spending"></div></div>
       </div>
-      <div class="card"><h2 id="ov-spending-title">Spending <button class="link right" data-goto="spending">Details</button></h2><div id="ov-spending"></div></div>
+    </section>
+
+    <!-- Monthly review -->
+    <section id="view-review" class="view">
+      <div class="card">
+        <div class="review-head">
+          <div>
+            <h2 id="rv-title">Monthly review</h2>
+            <p class="muted">Your monthly money routine, about 30 minutes. Work through it top to bottom.</p>
+          </div>
+          <label class="muted">Month <input type="month" id="rv-month"></label>
+        </div>
+        <div class="bar-track big"><div class="bar-fill" id="rv-bar"></div></div>
+        <p class="muted" id="rv-progress"></p>
+      </div>
+      <div id="rv-sections"></div>
+      <div class="card">
+        <h2>Change the checklist</h2>
+        <form id="rv-add" class="todo-form">
+          <input type="text" name="text" required placeholder="Add a step… e.g. Check my credit score" aria-label="New step">
+          <select name="section" aria-label="Section">
+            <option value="pay">Pay &amp; confirm</option>
+            <option value="update">Update</option>
+            <option value="reflect">Reflect</option>
+          </select>
+          <button type="submit" class="primary">Add step</button>
+        </form>
+        <p class="muted">Use ✕ next to a step to remove it. Changes apply to every month.</p>
+        <div class="button-row"><button class="ics-btn">📅 Add a monthly reminder to my calendar</button></div>
+      </div>
+      <div class="card">
+        <h2>Past reviews</h2>
+        <div id="rv-history"></div>
+      </div>
     </section>
 
     <!-- Monthly check-in -->
@@ -84,6 +119,14 @@
               <option value="liability">Something I owe (credit card, loan, mortgage)</option>
             </select>
           </label>
+          <label class="asset-only">Kind
+            <select name="group">
+              <option value="cash">Cash &amp; savings</option>
+              <option value="investments">Investments</option>
+              <option value="retirement">Retirement (401K, IRA, pension)</option>
+            </select>
+          </label>
+          <label class="pif-only">Monthly spending limit (optional) <input type="number" name="monthlyLimit" step="1" min="0" placeholder="e.g. 3000"></label>
           <div class="checks">
             <label class="check"><input type="checkbox" name="joint"> Joint account (shared with my partner)</label>
             <label class="check pif-only"><input type="checkbox" name="payInFull"> I pay this off in full every month</label>
@@ -109,6 +152,7 @@
     <!-- Bills -->
     <section id="view-bills" class="view">
       <div class="stats">
+        <div class="stat"><span class="label">Income per month</span><span class="value pos" id="income-month">—</span><span class="sub" id="income-sub"></span></div>
         <div class="stat"><span class="label">Bills per month</span><span class="value" id="bills-month">—</span><span class="sub" id="bills-year"></span></div>
         <div class="stat"><span class="label">Saving per month</span><span class="value pos" id="saving-month">—</span></div>
         <div class="stat"><span class="label">Investing per month</span><span class="value pos" id="investing-month">—</span></div>
@@ -117,9 +161,10 @@
         <h2 id="bill-form-title">Add a recurring payment</h2>
         <form id="bill-form" class="form-grid">
           <input type="hidden" name="id">
-          <label class="wide">Name <input type="text" name="name" required placeholder="e.g. Rent, Netflix, Transfer to savings"></label>
+          <label class="wide">Name <input type="text" name="name" required placeholder="e.g. Rent, Paycheck, Transfer to savings"></label>
           <label>Type
             <select name="kind">
+              <option value="income">Income (paycheck)</option>
               <option value="bill">Bill or expense</option>
               <option value="saving">Automatic saving</option>
               <option value="investing">Automatic investing</option>
@@ -137,6 +182,9 @@
           </label>
           <label>Next payment date <input type="date" name="dueDate" required></label>
           <label class="bill-only">Category <select name="category"></select></label>
+          <label class="to-only">Goes into account <select name="toAccountId"></select></label>
+          <label>Starts (optional) <input type="month" name="startMonth"></label>
+          <label>Ends (optional) <input type="month" name="endMonth"></label>
           <div class="form-actions">
             <button type="submit" class="primary">Save</button>
             <button type="button" id="bill-cancel" class="ghost" hidden>Cancel</button>
@@ -144,7 +192,7 @@
         </form>
       </div>
       <div class="grid2">
-        <div class="card"><h2>All recurring payments</h2><div id="bill-list"></div></div>
+        <div class="card"><h2>Everything recurring</h2><div id="bill-list"></div></div>
         <div class="card"><h2>Where your bills go (per month)</h2><div id="bill-cats"></div></div>
       </div>
     </section>
@@ -165,6 +213,8 @@
             <option value="short">Short term</option>
             <option value="long">Long term</option>
           </select>
+          <label class="inline-label">By <input type="date" name="dueDate" aria-label="Deadline (optional)"></label>
+          <input type="text" name="note" placeholder="Details or next steps (optional)" aria-label="Details" class="todo-note-input">
           <button type="submit" class="primary">Add</button>
           <button type="button" id="todo-cancel" class="ghost" hidden>Cancel</button>
         </form>
@@ -179,15 +229,23 @@
           <input type="hidden" name="id">
           <label class="wide">Goal <input type="text" name="name" required placeholder="e.g. Emergency fund, Holiday, New laptop"></label>
           <label>Target amount <input type="number" name="target" step="0.01" min="0.01" required></label>
-          <label>Track with account <select name="accountId"></select></label>
-          <label class="manual-only">Saved so far <input type="number" name="saved" step="0.01" min="0" value="0"></label>
           <label>Target date (optional) <input type="date" name="targetDate"></label>
+          <div class="wide-all">
+            <span class="field-label">Money for this goal is in… <span class="muted">(the goal updates from your check-in)</span></span>
+            <div id="goal-accounts" class="acct-picks"></div>
+          </div>
+          <label class="manual-only">Saved so far <input type="number" name="saved" step="0.01" min="0" value="0"></label>
+          <div class="wide-all">
+            <span class="field-label">Money you expect to add, e.g. a bonus <span class="muted">(optional)</span></span>
+            <div id="goal-expected"></div>
+            <button type="button" id="goal-add-expected" class="small">+ Add an expected amount</button>
+          </div>
+          <label class="check wide-all"><input type="checkbox" name="isSafetyNet"> This is my safety net (show how many months of costs it covers)</label>
           <div class="form-actions">
             <button type="submit" class="primary">Save</button>
             <button type="button" id="goal-cancel" class="ghost" hidden>Cancel</button>
           </div>
         </form>
-        <p class="muted">Pick an account and the goal updates by itself from your monthly check-in.</p>
       </div>
     </section>
 
@@ -279,6 +337,11 @@
           <label class="button">Restore backup <input type="file" id="import-json" accept=".json,application/json" hidden></label>
         </div>
         <p class="muted" id="last-backup"></p>
+      </div>
+      <div class="card">
+        <h2>Monthly reminder</h2>
+        <p class="muted">Adds a repeating "Monthly money review" event on the 1st of every month to your calendar (iPhone, Mac, Google, Outlook).</p>
+        <div class="button-row"><button class="ics-btn">📅 Add to my calendar</button></div>
       </div>
       <div class="card">
         <h2>Try it out</h2>

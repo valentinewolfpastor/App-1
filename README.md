@@ -6,10 +6,12 @@ A personal finance tracker that runs entirely in your browser. There is nothing 
 
 Built to need just a few minutes a month, with no daily expense logging.
 
-- **Overview**: net worth and how it changed since last month, a net worth chart, bills due in the next 30 days, goal progress, and this month's spending.
+- **Overview**: this month's review progress, net worth (split into cash, investments and retirement), your monthly plan (income − bills − card limit − saving − investing = left over), credit card limit and paid-in-full tracking, goal progress with on-track projections, what's coming up, and spending.
+- **Monthly review**: a checklist for a ~30 minute routine at the start of each month (pay & confirm, update, reflect). Enter your card bill against your limit, write a note, and see past months. Steps are editable, and you can add a monthly calendar reminder.
 - **Check-in**: once a month, type in each account's balance (bank, savings, investments, credit cards, loans). Last month's values are filled in, so you only change what moved.
 - **Bills**: rent, utilities, insurance and subscriptions, each with how often it's paid. Shows your monthly and yearly totals, what's due next, and a breakdown by category.
-- **Goals**: savings goals with progress bars. Set a target date and it tells you how much to save each month.
+- **Recurring**: income (with start/end months, e.g. a raise), bills, and automatic saving and investing into specific accounts.
+- **Goals**: a short- and long-term goals checklist with deadlines and notes, plus savings goals that can track several accounts. They count automatic transfers and expected one-off amounts (like a bonus) to tell you whether you're on track. A safety net goal shows how many months of costs it covers.
 - **Spending**: import the CSV file your bank lets you download. Columns, number formats and date formats are detected automatically, purchases are sorted into categories, and when you correct a category it's remembered for that shop. Duplicate rows are skipped, so re-importing a file is safe.
 - **Data**: download a backup and restore it, change the currency, or load sample data to explore.
 
