@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Finance Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Finance Tracker</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="dashboard">Dashboard</button>
+      <button class="tab" data-view="transactions">Transactions</button>
+      <button class="tab" data-view="accounts">Accounts</button>
+      <button class="tab" data-view="budgets">Budgets</button>
+      <button class="tab" data-view="settings">Data</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view active">
+      <div class="toolbar">
+        <label>Month <input type="month" id="dash-month"></label>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="label">Net worth</span><span class="value" id="stat-networth"></span><span class="sub" id="stat-networth-sub"></span></div>
+        <div class="stat"><span class="label">Income</span><span class="value pos" id="stat-income"></span></div>
+        <div class="stat"><span class="label">Expenses</span><span class="value neg" id="stat-expenses"></span></div>
+        <div class="stat"><span class="label">Saved</span><span class="value" id="stat-net"></span><span class="sub" id="stat-rate"></span></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Income vs. expenses (6 months)</h2>
+          <div id="chart-trend" class="chart"></div>
+        </div>
+        <div class="card">
+          <h2>Spending by category</h2>
+          <div id="chart-categories"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Budgets this month</h2>
+        <div id="dash-budgets"></div>
+      </div>
+    </section>
+
+    <!-- Transactions -->
+    <section id="view-transactions" class="view">
+      <div class="card">
+        <h2 id="tx-form-title">Add transaction</h2>
+        <form id="tx-form" class="form-grid">
+          <input type="hidden" name="id">
+          <label>Type
+            <select name="type">
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+              <option value="transfer">Transfer</option>
+            </select>
+          </label>
+          <label>Date <input type="date" name="date" required></label>
+          <label>Amount <input type="number" name="amount" step="0.01" min="0.01" required></label>
+          <label class="wide">Description <input type="text" name="description" placeholder="e.g. Groceries at market"></label>
+          <label class="cat-field">Category
+            <input type="text" name="category" list="category-list" placeholder="e.g. Groceries">
+          </label>
+          <label>Account <select name="accountId" required></select></label>
+          <label class="to-field" hidden>To account <select name="toAccountId"></select></label>
+          <div class="form-actions">
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="tx-cancel" class="ghost" hidden>Cancel edit</button>
+          </div>
+        </form>
+        <datalist id="category-list"></datalist>
+      </div>
+
+      <div class="card">
+        <div class="toolbar">
+          <input type="search" id="tx-search" placeholder="Search description or category">
+          <input type="month" id="tx-month" title="Filter by month">
+          <select id="tx-type-filter">
+            <option value="">All types</option>
+            <option value="income">Income</option>
+            <option value="expense">Expense</option>
+            <option value="transfer">Transfer</option>
+          </select>
+          <select id="tx-account-filter"><option value="">All accounts</option></select>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Account</th><th class="num">Amount</th><th></th></tr></thead>
+            <tbody id="tx-body"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="tx-count"></p>
+      </div>
+    </section>
+
+    <!-- Accounts -->
+    <section id="view-accounts" class="view">
+      <div class="card">
+        <h2 id="acct-form-title">Add account</h2>
+        <form id="acct-form" class="form-grid">
+          <input type="hidden" name="id">
+          <label class="wide">Name <input type="text" name="name" required placeholder="e.g. Main checking"></label>
+          <label>Type
+            <select name="type">
+              <option value="asset">Asset (checking, savings, cash, investments)</option>
+              <option value="liability">Liability (credit card, loan, mortgage)</option>
+            </select>
+          </label>
+          <label>Starting balance <input type="number" name="openingBalance" step="0.01" value="0"></label>
+          <div class="form-actions">
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="acct-cancel" class="ghost" hidden>Cancel edit</button>
+          </div>
+        </form>
+        <p class="muted">For liabilities, enter the amount you owe as a positive number.</p>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Assets <span id="assets-total" class="right pos"></span></h2><ul id="assets-list" class="acct-list"></ul></div>
+        <div class="card"><h2>Liabilities <span id="liabs-total" class="right neg"></span></h2><ul id="liabs-list" class="acct-list"></ul></div>
+      </div>
+    </section>
+
+    <!-- Budgets -->
+    <section id="view-budgets" class="view">
+      <div class="card">
+        <h2>Monthly budgets</h2>
+        <form id="budget-form" class="form-grid">
+          <label class="wide">Category <input type="text" name="category" list="category-list" required></label>
+          <label>Monthly limit <input type="number" name="limit" step="0.01" min="0" required></label>
+          <div class="form-actions"><button type="submit" class="primary">Set budget</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="toolbar"><label>Month <input type="month" id="budget-month"></label></div>
+        <div id="budget-list"></div>
+      </div>
+    </section>
+
+    <!-- Data / settings -->
+    <section id="view-settings" class="view">
+      <div class="card">
+        <h2>Settings</h2>
+        <form id="settings-form" class="form-grid">
+          <label>Currency
+            <select name="currency">
+              <option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option>
+              <option>AUD</option><option>JPY</option><option>CHF</option><option>MXN</option><option>BRL</option><option>INR</option>
+            </select>
+          </label>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Backup &amp; restore</h2>
+        <p class="muted">Your data is stored only in this browser. Download a backup regularly.</p>
+        <div class="button-row">
+          <button id="export-json" class="primary">Download full backup (.json)</button>
+          <label class="button">Restore backup <input type="file" id="import-json" accept=".json,application/json" hidden></label>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Transactions CSV</h2>
+        <p class="muted">Columns: <code>date, description, type, category, amount, account, toAccount</code>.
+          Bank exports with just <code>date, description, amount</code> also work (negative amounts become expenses).
+          Rows with an unknown account go into the account selected below.</p>
+        <div class="button-row">
+          <button id="export-csv">Export CSV</button>
+          <select id="import-csv-account"></select>
+          <label class="button">Import CSV <input type="file" id="import-csv" accept=".csv,text/csv" hidden></label>
+        </div>
+      </div>
+      <div class="card danger">
+        <h2>Danger zone</h2>
+        <div class="button-row">
+          <button id="load-sample">Load sample data</button>
+          <button id="reset-all" class="danger-btn">Erase all data</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="finance.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
