@@ -4,11 +4,14 @@ A personal finance tracker that runs entirely in your browser. There is nothing 
 
 ## Features
 
-- **Dashboard**: net worth, monthly income, expenses and savings rate, a 6-month income vs. expenses chart, spending by category, and budget progress.
-- **Transactions**: record income, expenses and transfers between accounts. You can search and filter by month, type or account, and edit or delete entries.
-- **Accounts**: track assets (checking, savings, cash, investments) and liabilities (credit cards, loans). Balances update automatically from your transactions.
-- **Budgets**: set a monthly limit per category and see how much is left. Bars turn amber near the limit and red when you go over.
-- **Data**: download a JSON backup and restore it later, or export and import transactions as CSV. Bank exports with `date, description, amount` columns work too. You can also load sample data to explore.
+Built to need just a few minutes a month, with no daily expense logging.
+
+- **Overview**: net worth and how it changed since last month, a net worth chart, bills due in the next 30 days, goal progress, and this month's spending.
+- **Check-in**: once a month, type in each account's balance (bank, savings, investments, credit cards, loans). Last month's values are filled in, so you only change what moved.
+- **Bills**: rent, utilities, insurance and subscriptions, each with how often it's paid. Shows your monthly and yearly totals, what's due next, and a breakdown by category.
+- **Goals**: savings goals with progress bars. Set a target date and it tells you how much to save each month.
+- **Spending**: import the CSV file your bank lets you download. Columns, number formats and date formats are detected automatically, purchases are sorted into categories, and when you correct a category it's remembered for that shop. Duplicate rows are skipped, so re-importing a file is safe.
+- **Data**: download a backup and restore it, change the currency, or load sample data to explore.
 
 ## Usage
 
@@ -18,9 +21,9 @@ Open `index.html` in any modern browser. Or serve the folder:
 python3 -m http.server 8000   # then visit http://localhost:8000
 ```
 
-1. Add your accounts with their current balances (Accounts tab).
-2. Record transactions as they happen, or import a CSV from your bank.
-3. Set budgets for the categories you want to control.
+1. Add your accounts and their current balances (Check-in tab).
+2. Add your bills and subscriptions, and any savings goals.
+3. Once a month: do the check-in and import your bank's CSV file.
 
 ### Install it as an app
 
@@ -36,6 +39,6 @@ Data is saved in your browser's `localStorage`. Clearing site data erases it, so
 
 ## Development
 
-- `finance.js`: pure calculation logic (balances, net worth, summaries, budgets, CSV)
+- `finance.js`: pure calculation logic (net worth, bills, goals, bank file parsing, categories)
 - `app.js`: UI and state
 - `finance.test.js`: tests, run with `node --test`
