@@ -247,6 +247,50 @@
     };
   }
 
+  // ---- Investment returns ----------------------------------------------
+
+  /**
+   * What an investment account earned: change in balance minus the money put in.
+   * Tracking starts at the account's first check-in. `contributions` is
+   * { "YYYY-MM": { accountId: amount added since the previous check-in } }.
+   * `investedBefore` (optional) is the total put in before tracking started (Fidelity
+   * calls it "cost basis"), which allows an all-time gain.
+   */
+  function investmentReturns(accountId, snapshots, contributions, upTo, investedBefore) {
+    const months = Object.keys(snapshots)
+      .filter((m) => m <= upTo && snapshots[m][accountId] !== undefined && snapshots[m][accountId] !== '')
+      .sort();
+    if (!months.length) return null;
+    const bal = (m) => Number(snapshots[m][accountId]);
+    const addedIn = (from, to) => Object.keys(contributions || {})
+      .filter((m) => m > from && m <= to)
+      .reduce((s, m) => s + (Number(contributions[m]?.[accountId]) || 0), 0);
+    const periods = [];
+    for (let i = 1; i < months.length; i++) {
+      const p = months[i - 1], m = months[i];
+      const added = addedIn(p, m);
+      const gain = bal(m) - bal(p) - added;
+      const base = bal(p) + added;
+      periods.push({ month: m, from: p, balance: bal(m), added: round2(added), gain: round2(gain), pct: base > 0 ? gain / base : null });
+    }
+    const start = months[0], last = months[months.length - 1];
+    const added = addedIn(start, last);
+    const current = bal(last);
+    const gain = current - bal(start) - added;
+    const base = bal(start) + added;
+    const out = {
+      startMonth: start, lastMonth: last, startBalance: bal(start), current,
+      added: round2(added), gain: round2(gain), pct: base > 0 ? gain / base : null, periods,
+    };
+    if (investedBefore !== undefined && investedBefore !== null && investedBefore !== '') {
+      const invested = Number(investedBefore) + added;
+      out.invested = round2(invested);
+      out.allTimeGain = round2(current - invested);
+      out.allTimePct = invested > 0 ? (current - invested) / invested : null;
+    }
+    return out;
+  }
+
   /** How many months of costs a safety net covers. */
   const monthsCovered = (amount, monthlyCosts) => (monthlyCosts > 0 ? Math.round((amount / monthlyCosts) * 10) / 10 : null);
 
@@ -521,6 +565,7 @@
     balancesAt, netWorthAt, netWorthHistory,
     FREQUENCIES, monthlyCost, nextDueDate, billTotals, upcomingBills,
     isActiveIn, occurrences, monthlyPlan,
+    investmentReturns,
     goalProgress, goalSaved, goalAccountIds, goalPlan, monthsCovered, assetGroups, underLimitStreak, payInFullStreak,
     detectDelimiter, parseCsv, parseAmount, parseDate, guessDateFormat, guessColumns, mapRows,
     EXCLUDED, SPENDING_CATEGORIES, merchantKey, categorize, spendingSummary, entryKey,

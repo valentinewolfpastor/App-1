@@ -229,3 +229,25 @@ test('safety-net months, asset groups, card limit streak', () => {
   assert.equal(F.underLimitStreak(bills, 'amex', 3000, '2026-12'), 2);
   assert.equal(F.underLimitStreak({ ...bills, '2026-12': { amex: 3100 } }, 'amex', 3000, '2026-12'), 0);
 });
+
+test('investment returns: balance change minus money put in', () => {
+  const snaps = {
+    '2026-11': { voo: 23740.78 },
+    '2026-12': { voo: 24600 },      // +859.22, nothing added yet
+    '2027-01': { voo: 25300 },      // +700 with 500 added -> gain 200
+    '2027-02': {},                  // not checked in
+    '2027-03': { voo: 26000 },      // +700 with 1000 added (Feb + Mar) -> loss -300
+  };
+  const contrib = { '2027-01': { voo: 500 }, '2027-02': { voo: 500 }, '2027-03': { voo: 500 }, '2026-11': { voo: 9999 } };
+  const r = F.investmentReturns('voo', snaps, contrib, '2027-03');
+  assert.equal(r.startMonth, '2026-11');
+  assert.equal(r.added, 1500); // Nov contribution is before tracking starts, so it's ignored
+  assert.equal(r.gain, F.round2(26000 - 23740.78 - 1500));
+  assert.deepEqual(r.periods.map((p) => [p.month, p.added, p.gain]), [['2026-12', 0, 859.22], ['2027-01', 500, 200], ['2027-03', 1000, -300]]);
+  assert.ok(Math.abs(r.periods[1].pct - 200 / 25100) < 1e-9);
+  const all = F.investmentReturns('voo', snaps, contrib, '2027-03', 20000);
+  assert.equal(all.invested, 21500);
+  assert.equal(all.allTimeGain, 4500);
+  assert.equal(F.investmentReturns('nope', snaps, contrib, '2027-03'), null);
+  assert.equal(F.investmentReturns('voo', snaps, contrib, '2026-11').periods.length, 0);
+});

@@ -17,7 +17,7 @@
 
   const emptyState = () => ({
     version: 2, settings: { currency: 'USD' },
-    accounts: [], snapshots: {}, paidInFull: {}, cardBills: {}, bills: [], goals: [], todos: [], review: null,
+    accounts: [], snapshots: {}, snapshotDates: {}, contributions: {}, paidInFull: {}, cardBills: {}, bills: [], goals: [], todos: [], review: null,
     spending: [], rules: {}, lastBackup: null,
   });
 
@@ -227,6 +227,7 @@
       $('#ov-networth-sub').textContent = 'Do your first check-in';
     }
     renderNetWorthChart(history.slice(-24));
+    renderInvestments(month);
 
     // Monthly plan
     const plan = Finance.monthlyPlan(state.bills, state.accounts, month);
@@ -291,6 +292,60 @@
       $('#ov-spending-title').firstChild.textContent = 'Spending ';
       $('#ov-spending').innerHTML = empty('Import a statement file from your bank or card on the Spending tab to see where your money goes.');
     }
+  }
+
+  const isInvestment = (a) => a.type !== 'liability' && a.group === 'investments' && !a.archived;
+  const monthEnd = (m) => `${m}-${String(new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).getUTCDate()).padStart(2, '0')}`;
+
+  /** Automatic transfers into an account since the previous check-in (a starting guess the user can change). */
+  function defaultContribution(accountId, month, prevMonth) {
+    const from = Finance.addDays(state.snapshotDates[prevMonth] || monthEnd(prevMonth), 1);
+    const to = month === thisMonth() ? localToday() : monthEnd(month);
+    return Finance.round2(state.bills
+      .filter((b) => !b.paused && ['saving', 'investing'].includes(b.kind) && b.toAccountId === accountId)
+      .reduce((s, b) => s + Finance.occurrences(b, from, to).length * (Number(b.amount) || 0), 0));
+  }
+
+  const pctText = (p) => (p == null ? '' : `${p >= 0 ? '+' : '−'}${Math.abs(p * 100).toFixed(1)}%`);
+
+  function renderInvestments(month) {
+    const accts = state.accounts.filter(isInvestment);
+    $('#ov-invest-card').hidden = !accts.length;
+    if (!accts.length) return;
+    const rows = accts.map((a) => ({ a, r: Finance.investmentReturns(a.id, state.snapshots, state.contributions, month, a.investedBefore) })).filter((x) => x.r);
+    if (!rows.length) { $('#ov-invest').innerHTML = empty('Save a check-in with your investment balances to start tracking.'); return; }
+    const since = rows.reduce((m, x) => (x.r.startMonth < m ? x.r.startMonth : m), rows[0].r.startMonth);
+    $('#ov-invest-since').textContent = `tracking since ${monthShort(since)}`;
+    const hasAllTime = rows.some((x) => x.r.allTimeGain !== undefined);
+    const tot = rows.reduce((t, { r }) => {
+      const last = r.periods[r.periods.length - 1];
+      t.current += r.current; t.added += r.added; t.gain += r.gain; t.base += r.startBalance + r.added;
+      t.last += last ? last.gain : 0;
+      if (r.allTimeGain !== undefined) { t.allGain += r.allTimeGain; t.invested += r.invested; }
+      return t;
+    }, { current: 0, added: 0, gain: 0, base: 0, last: 0, allGain: 0, invested: 0 });
+    const g = (v, p) => `<span class="${v >= 0 ? 'pos' : 'neg'}">${esc(signedMoney(v))}</span>${p != null ? ` <span class="muted">${pctText(p)}</span>` : ''}`;
+    const anyPeriods = rows.some((x) => x.r.periods.length);
+    $('#ov-invest').innerHTML = `<div class="table-wrap"><table class="table inv">
+      <thead><tr><th>Account</th><th class="num">Balance</th><th class="num">Put in</th><th class="num">Earned</th><th class="num">Last month</th>${hasAllTime ? '<th class="num">All time</th>' : ''}</tr></thead>
+      <tbody>${rows.map(({ a, r }) => {
+        const last = r.periods[r.periods.length - 1];
+        return `<tr><td>${esc(a.name)}${a.holding ? ` <span class="pill">${esc(a.holding)}</span>` : ''}</td>
+          <td class="num">${esc(money(r.current))}</td>
+          <td class="num">${esc(money(r.added))}</td>
+          <td class="num">${r.periods.length ? g(r.gain, r.pct) : '<span class="muted">–</span>'}</td>
+          <td class="num">${last ? g(last.gain, last.pct) : '<span class="muted">–</span>'}</td>
+          ${hasAllTime ? `<td class="num">${r.allTimeGain !== undefined ? g(r.allTimeGain, r.allTimePct) : '<span class="muted">–</span>'}</td>` : ''}</tr>`;
+      }).join('')}
+      <tr class="plan-total"><td><strong>Total</strong></td><td class="num"><strong>${esc(money(tot.current))}</strong></td><td class="num">${esc(money(tot.added))}</td>
+        <td class="num">${anyPeriods ? g(tot.gain, tot.base > 0 ? tot.gain / tot.base : null) : '<span class="muted">–</span>'}</td>
+        <td class="num">${anyPeriods ? g(tot.last, null) : '<span class="muted">–</span>'}</td>
+        ${hasAllTime ? `<td class="num">${tot.invested ? g(tot.allGain, tot.allGain / tot.invested) : ''}</td>` : ''}</tr>
+      </tbody></table></div>
+      <p class="muted inv-note">${anyPeriods
+        ? '<strong>Earned</strong> = change in balance minus the money you put in, since tracking started. <strong>Put in</strong> = your transfers since then.'
+        : `Your first earnings show up after your next check-in. Each month the app subtracts the money you put in (it pre-fills your automatic transfers) from the change in balance, so you see what the investments actually made.`}
+        ${hasAllTime ? '' : ' Want an all-time figure? Edit an account on the Check-in tab and enter "Total put in so far" (Fidelity calls it <em>cost basis</em>).'}</p>`;
   }
 
   const shorten = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
@@ -673,13 +728,29 @@
     const carried = Finance.balancesAt(state.accounts, state.snapshots, Finance.addMonthsToKey(month, -1));
     const accounts = activeAccounts();
 
+    const prevMonth = Object.keys(state.snapshots).filter((x) => x < month && state.snapshots[x]).sort().pop();
     const row = (a) => {
       const v = a.id in saved ? saved[a.id] : carried[a.id];
+      let inv = '';
+      if (isInvestment(a)) {
+        const prevBal = prevMonth ? Finance.balancesAt(state.accounts, state.snapshots, prevMonth)[a.id] : undefined;
+        if (prevBal === undefined) {
+          inv = `<div class="ci-inv muted">Starting point: from here on, the app tracks what this account earns.</div>`;
+        } else {
+          const stored = state.contributions[month]?.[a.id];
+          const added = stored !== undefined ? stored : defaultContribution(a.id, month, prevMonth);
+          inv = `<div class="ci-inv" data-inv-row="${a.id}" data-prev="${prevBal}">
+            <label class="inline-label">Put in since ${esc(monthShort(prevMonth))} <input type="number" step="0.01" inputmode="decimal" data-added="${a.id}" value="${added}" aria-label="Money put in since last check-in"></label>
+            <span class="ci-gain"></span>
+          </div>`;
+        }
+      }
       return `<div class="ci-row">
-        <span class="ci-name">${esc(a.name)}${a.joint ? ' <span class="pill">joint</span>' : ''}${a.group === 'retirement' ? ' <span class="pill">retirement</span>' : a.group === 'investments' ? ' <span class="pill">invested</span>' : ''}</span>
+        <span class="ci-name">${esc(a.name)}${a.joint ? ' <span class="pill">joint</span>' : ''}${a.group === 'retirement' ? ' <span class="pill">retirement</span>' : a.group === 'investments' ? ` <span class="pill">${esc(a.holding || 'invested')}</span>` : ''}</span>
         <input type="number" step="0.01" inputmode="decimal" data-acct="${a.id}" value="${v ?? ''}" placeholder="0" aria-label="${esc(a.name)} balance">
         <button type="button" class="icon-btn" data-edit-acct="${a.id}" title="Rename">Edit</button>
         <button type="button" class="icon-btn" data-remove-acct="${a.id}" title="Remove">✕</button>
+        ${inv}
       </div>`;
     };
     const assets = accounts.filter((a) => a.type !== 'liability');
@@ -719,6 +790,16 @@
       if (a.type === 'liability') owe += v; else have += v;
     }
     const net = have - owe;
+    // Live "earned" figure for investment accounts.
+    for (const r of $$('#ci-form [data-inv-row]')) {
+      const id = r.dataset.invRow;
+      const bal = Number($(`input[data-acct="${id}"]`).value) || 0;
+      const added = Number($(`input[data-added="${id}"]`, r).value) || 0;
+      const prev = Number(r.dataset.prev) || 0;
+      const gain = bal - prev - added;
+      const pct = prev + added > 0 ? gain / (prev + added) : 0;
+      $('.ci-gain', r).innerHTML = `Earned <strong class="${gain >= 0 ? 'pos' : 'neg'}">${esc(signedMoney(gain))}</strong> <span class="muted">(${pctText(pct)})</span>`;
+    }
     $('#ci-assets-total').textContent = money(have);
     $('#ci-liabs-total').textContent = money(owe);
     $('#ci-net').textContent = money(net);
@@ -739,6 +820,10 @@
     const snap = { ...(state.snapshots[month] || {}) };
     for (const input of $$('#ci-form input[data-acct]')) snap[input.dataset.acct] = Finance.round2(Number(input.value) || 0);
     state.snapshots[month] = snap;
+    const added = {};
+    for (const input of $$('#ci-form input[data-added]')) added[input.dataset.added] = Finance.round2(Number(input.value) || 0);
+    if (Object.keys(added).length) state.contributions[month] = { ...(state.contributions[month] || {}), ...added };
+    state.snapshotDates[month] = month === thisMonth() ? localToday() : monthEnd(month);
     save();
     toast(`Check-in saved for ${monthLong(month)}`);
   });
@@ -751,6 +836,7 @@
       f.id.value = a.id; f.name.value = a.name; f.type.value = a.type;
       f.joint.checked = !!a.joint; f.payInFull.checked = !!a.payInFull;
       f.group.value = a.group || 'cash'; f.monthlyLimit.value = a.monthlyLimit || '';
+      f.holding.value = a.holding || ''; f.investedBefore.value = a.investedBefore ?? '';
       syncAcctForm();
       $('#acct-form-title').textContent = 'Edit account';
       $('#acct-cancel').hidden = false;
@@ -777,8 +863,10 @@
     const liab = acctForm.type.value === 'liability';
     $$('.pif-only', acctForm).forEach((el) => { el.hidden = !liab; });
     $$('.asset-only', acctForm).forEach((el) => { el.hidden = liab; });
+    $$('.inv-only', acctForm).forEach((el) => { el.hidden = liab || acctForm.group.value !== 'investments'; });
   }
   acctForm.type.addEventListener('change', syncAcctForm);
+  acctForm.group.addEventListener('change', syncAcctForm);
   function resetAcctForm() {
     acctForm.reset(); acctForm.id.value = '';
     $('#acct-form-title').textContent = 'Add an account';
@@ -794,6 +882,8 @@
       payInFull: acctForm.type.value === 'liability' && acctForm.payInFull.checked,
       group: acctForm.type.value === 'asset' ? acctForm.group.value : undefined,
       monthlyLimit: acctForm.type.value === 'liability' && Number(acctForm.monthlyLimit.value) > 0 ? Number(acctForm.monthlyLimit.value) : undefined,
+      holding: acctForm.type.value === 'asset' && acctForm.group.value === 'investments' ? acctForm.holding.value.trim() : undefined,
+      investedBefore: acctForm.type.value === 'asset' && acctForm.group.value === 'investments' && acctForm.investedBefore.value !== '' ? Number(acctForm.investedBefore.value) : undefined,
     };
     if (existing) Object.assign(existing, fields);
     else state.accounts.push({ id: uid(), ...fields });

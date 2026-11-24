@@ -44,6 +44,10 @@
         <div class="card"><h2>Savings goals <button class="link right" data-goto="goals">Details</button></h2><div id="ov-goal-list"></div></div>
         <div class="card"><h2 id="ov-plan-title">Monthly plan <button class="link right" data-goto="bills">Edit</button></h2><div id="ov-plan"></div></div>
       </div>
+      <div class="card" id="ov-invest-card" hidden>
+        <h2>Investments <span class="muted right" id="ov-invest-since"></span></h2>
+        <div id="ov-invest"></div>
+      </div>
       <div class="card">
         <h2>Net worth over time</h2>
         <div id="ov-chart" class="chart"></div>
@@ -126,6 +130,8 @@
               <option value="retirement">Retirement (401K, IRA, pension)</option>
             </select>
           </label>
+          <label class="inv-only">Invested in (optional) <input type="text" name="holding" placeholder="e.g. VOO, BND, managed"></label>
+          <label class="inv-only">Total put in so far (optional) <input type="number" name="investedBefore" step="0.01" min="0" placeholder="Fidelity: cost basis"></label>
           <label class="pif-only">Monthly spending limit (optional) <input type="number" name="monthlyLimit" step="1" min="0" placeholder="e.g. 3000"></label>
           <div class="checks">
             <label class="check"><input type="checkbox" name="joint"> Joint account (shared with my partner)</label>
