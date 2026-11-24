@@ -114,10 +114,27 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
     // The chart sizes itself to the screen, so redraw it once its tab is visible.
     if (name === 'overview') requestAnimationFrame(renderOverview);
+    setPageTitle(name);
     try { sessionStorage.setItem('finance-tracker:view', name); } catch (e) { /* ignore */ }
     window.scrollTo(0, 0);
   }
   $$('.tab').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+
+  const PAGE_SUBTITLES = {
+    review: 'Your monthly money routine, about 30 minutes',
+    checkin: 'Update your balances once a month',
+    bills: 'Income, bills and automatic transfers',
+    goals: 'What you\'re working toward',
+    spending: 'Where your money goes',
+    settings: 'Backup, restore and settings',
+  };
+  function setPageTitle(name) {
+    const tab = $(`.tab[data-view="${name}"] span`);
+    $('#page-title').textContent = tab ? tab.textContent : '';
+    $('#page-sub').textContent = name === 'overview'
+      ? new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })
+      : PAGE_SUBTITLES[name] || '';
+  }
   document.addEventListener('click', (e) => {
     const g = e.target.closest('[data-goto]');
     if (g) showView(g.dataset.goto);
@@ -487,7 +504,10 @@
     if (lo > 0 && lo < span) lo = 0;
     const x = (i) => padL + (i / (points.length - 1)) * (W - padL - padR);
     const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (H - padT - padB);
-    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Net worth by month">`;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Net worth by month">
+      <defs><linearGradient id="nw-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" style="stop-color:var(--accent);stop-opacity:.28"/><stop offset="100%" style="stop-color:var(--accent);stop-opacity:0"/>
+      </linearGradient></defs>`;
     for (let i = 0; i <= 4; i++) {
       const v = lo + ((hi - lo) / 4) * i;
       svg += `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end">${esc(fmtCompact.format(v))}</text>`;
@@ -498,7 +518,8 @@
     svg += `<path class="area" d="${line}L${x(points.length - 1)},${base}L${x(0)},${base}Z"/><path class="line" d="${line}"/>`;
     const every = Math.ceil(points.length / Math.max(3, Math.floor(W / 90)));
     points.forEach((p, i) => {
-      svg += `<circle class="dot${p.checkedIn ? '' : ' hollow'}" cx="${x(i)}" cy="${y(p.net)}" r="${points.length > 18 ? 2.5 : 3.5}"><title>${esc(monthLong(p.month))}: ${esc(money(p.net))}${p.checkedIn ? '' : ' (no check-in, carried forward)'}</title></circle>`;
+      const lastPt = i === points.length - 1;
+      svg += `<circle class="dot${p.checkedIn ? '' : ' hollow'}${lastPt ? ' last' : ''}" cx="${x(i)}" cy="${y(p.net)}" r="${lastPt ? 5 : points.length > 18 ? 2.5 : 3.5}"><title>${esc(monthLong(p.month))}: ${esc(money(p.net))}${p.checkedIn ? '' : ' (no check-in, carried forward)'}</title></circle>`;
       if (i % every === 0 || i === points.length - 1) svg += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${esc(monthShort(p.month))}</text>`;
     });
     el.innerHTML = svg + '</svg>';
@@ -1538,6 +1559,7 @@
   }, true);
   resetBillForm();
   render();
+  setPageTitle('overview');
   try {
     const v = sessionStorage.getItem('finance-tracker:view');
     if (v && $(`#view-${v}`)) showView(v);
