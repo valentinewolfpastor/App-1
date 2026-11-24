@@ -118,8 +118,12 @@
     return d;
   }
 
-  function billTotals(bills) {
-    const active = bills.filter((b) => !b.paused);
+  /**
+   * Totals for recurring payments of one kind: 'bill' (default), 'saving' or 'investing'.
+   * Payments with a varying amount (e.g. paying off a credit card) aren't counted.
+   */
+  function billTotals(bills, kind = 'bill') {
+    const active = bills.filter((b) => !b.paused && !b.variable && (b.kind || 'bill') === kind);
     const perMonth = active.reduce((s, b) => s + monthlyCost(b), 0);
     const byCategory = {};
     for (const b of active) byCategory[b.category || 'Other'] = (byCategory[b.category || 'Other'] || 0) + monthlyCost(b);
@@ -160,6 +164,31 @@
       monthsLeft,
       perMonth,
     };
+  }
+
+  /** Amount saved toward a goal: the linked account's latest balance, or the manual amount. */
+  function goalSaved(goal, accounts, snapshots, month) {
+    if (goal.accountId) {
+      const bal = balancesAt(accounts, snapshots, month)[goal.accountId];
+      if (bal !== undefined) return bal;
+    }
+    return Number(goal.saved) || 0;
+  }
+
+  // ---- Pay-in-full streak ------------------------------------------------
+
+  /**
+   * How many months in a row an account was paid off in full, counting back
+   * from `month`. If `month` isn't marked yet, counting starts from the month before
+   * (so the streak doesn't reset just because this month's payment isn't due yet).
+   * paidInFull: { "YYYY-MM": { accountId: true } }
+   */
+  function payInFullStreak(paidInFull, accountId, month) {
+    const isPaid = (m) => !!(paidInFull[m] && paidInFull[m][accountId]);
+    let m = isPaid(month) ? month : addMonthsToKey(month, -1);
+    let streak = 0;
+    while (isPaid(m)) { streak++; m = addMonthsToKey(m, -1); }
+    return streak;
   }
 
   // ---- Bank file import ------------------------------------------------
@@ -397,7 +426,7 @@
     round2, monthKey, addMonthsToKey, lastMonths, monthRange, addDays, daysBetween,
     balancesAt, netWorthAt, netWorthHistory,
     FREQUENCIES, monthlyCost, nextDueDate, billTotals, upcomingBills,
-    goalProgress,
+    goalProgress, goalSaved, payInFullStreak,
     detectDelimiter, parseCsv, parseAmount, parseDate, guessDateFormat, guessColumns, mapRows,
     EXCLUDED, SPENDING_CATEGORIES, merchantKey, categorize, spendingSummary, entryKey,
   };

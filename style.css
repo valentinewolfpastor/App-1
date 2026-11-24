@@ -220,3 +220,39 @@ button:disabled { opacity: .5; cursor: default; }
   .ci-row { grid-template-columns: 1fr 110px auto auto; }
   .list .when { min-width: 64px; }
 }
+
+/* ---- Personal setup: checkboxes, goals checklist, pay-in-full ---- */
+label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: .92rem; cursor: pointer; }
+label.check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); flex: none; }
+.form-grid label.check { align-self: center; }
+.checks { display: flex; flex-direction: column; gap: 8px; grid-column: 1 / -1; }
+.section-title { font-size: 1.05rem; margin: 24px 0 12px; }
+.pill.saving, .pill.investing { background: color-mix(in srgb, var(--pos) 15%, transparent); color: var(--pos); }
+
+.todo-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.todo-list li { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.todo-list li:last-child { border-bottom: 0; }
+.todo-list li .row-actions { margin-left: auto; opacity: .7; }
+.todo-list li.done label span { text-decoration: line-through; color: var(--muted); }
+.todo-list label.check { align-items: flex-start; }
+.todo-list label.check input { margin-top: 2px; }
+.todo-list.compact li { padding: 6px 0; }
+.todo-long-line { margin: 4px 0 0; }
+.todo-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+.todo-form input[type=text] { flex: 1 1 260px; }
+
+.ci-pif { margin-top: 16px; padding: 12px 14px; border-radius: 8px; background: var(--bg); display: flex; flex-direction: column; gap: 8px; }
+.pif + .pif { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.pif-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pif-streak { font-size: .9rem; color: var(--muted); }
+.pif-dots { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 12px 0; }
+.pif-dot { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: .72rem; color: var(--muted); }
+.pif-dot::before { content: ""; width: 26px; height: 26px; border-radius: 50%; background: var(--track); }
+.pif-dot.paid::before { background: var(--pos); box-shadow: inset 0 0 0 7px color-mix(in srgb, var(--pos) 70%, var(--surface)); }
+.pif-dot.pending::before { background: transparent; border: 2px dashed var(--muted); box-sizing: border-box; }
+.linked { font-size: .82rem; }
+.tab { flex: none; }
+.list .amt { white-space: nowrap; }
+@media (max-width: 520px) {
+  .tabs { flex-wrap: wrap; overflow: visible; }
+}

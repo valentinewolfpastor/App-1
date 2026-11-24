@@ -1,7 +1,7 @@
 // Service worker: lets the app open without an internet connection.
 // Network first (so you always get the latest version when online),
 // falling back to the cached copy when offline.
-const CACHE = 'finance-tracker-v2';
+const CACHE = 'finance-tracker-v3';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'finance.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/icon.svg'];
 

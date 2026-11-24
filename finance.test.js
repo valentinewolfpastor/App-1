@@ -57,6 +57,34 @@ test('bill totals and upcoming', () => {
   assert.deepEqual(up.map((u) => [u.bill.name, u.due]), [['Gym', '2026-11-30'], ['Rent', '2026-12-01'], ['Insurance', '2026-12-01'], ['Gym', '2026-12-07']].slice(0, 3));
 });
 
+test('bill totals are split by kind and skip varying amounts', () => {
+  const bills = [
+    { amount: 2700, frequency: 'monthly', kind: 'bill' },
+    { amount: 0, frequency: 'monthly', kind: 'bill', variable: true },
+    { amount: 1500, frequency: 'monthly', kind: 'saving' },
+    { amount: 1500, frequency: 'monthly', kind: 'investing' },
+    { amount: 100, frequency: 'monthly' }, // no kind = bill
+  ];
+  assert.equal(F.billTotals(bills).perMonth, 2800);
+  assert.equal(F.billTotals(bills, 'saving').perMonth, 1500);
+  assert.equal(F.billTotals(bills, 'investing').perMonth, 1500);
+});
+
+test('goal linked to an account follows its check-in balance', () => {
+  const g = { target: 50000, saved: 1, accountId: 'sav' };
+  assert.equal(F.goalSaved(g, accounts, snapshots, '2026-11'), 5000);
+  assert.equal(F.goalSaved({ ...g, accountId: 'nope' }, accounts, snapshots, '2026-11'), 1);
+  assert.equal(F.goalSaved({ target: 10, saved: 4 }, accounts, snapshots, '2026-11'), 4);
+});
+
+test('pay-in-full streak', () => {
+  const p = { '2026-08': { cc: true }, '2026-09': { cc: true }, '2026-10': { cc: true }, '2026-11': {} };
+  assert.equal(F.payInFullStreak(p, 'cc', '2026-11'), 3); // November not ticked yet: streak kept
+  assert.equal(F.payInFullStreak({ ...p, '2026-11': { cc: true } }, 'cc', '2026-11'), 4);
+  assert.equal(F.payInFullStreak({ ...p, '2026-09': {} }, 'cc', '2026-11'), 1);
+  assert.equal(F.payInFullStreak({}, 'cc', '2026-11'), 0);
+});
+
 test('goal progress', () => {
   const g = F.goalProgress({ target: 5000, saved: 2000, targetDate: '2027-05-24' }, '2026-11-24');
   assert.equal(g.remaining, 3000);

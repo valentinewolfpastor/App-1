@@ -17,7 +17,7 @@
 
   const emptyState = () => ({
     version: 2, settings: { currency: 'USD' },
-    accounts: [], snapshots: {}, bills: [], goals: [], spending: [], rules: {}, lastBackup: null,
+    accounts: [], snapshots: {}, paidInFull: {}, bills: [], goals: [], todos: [], spending: [], rules: {}, lastBackup: null,
   });
 
   /** Convert data from the first version of the app (transaction based). */
@@ -55,9 +55,13 @@
 
   let state = load();
 
-  function save() {
+  function persist() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch (e) { toast('Could not save. Browser storage is unavailable or full.'); }
+  }
+
+  function save() {
+    persist();
     render();
   }
 
@@ -129,6 +133,32 @@
   }
 
   const activeAccounts = () => state.accounts.filter((a) => !a.archived);
+  const KIND_LABELS = { saving: 'saving', investing: 'investing' };
+  const kindPill = (b) => (KIND_LABELS[b.kind] ? `<span class="pill ${b.kind}">${KIND_LABELS[b.kind]}</span>` : '');
+  const todoItem = (t) => `<li class="${t.done ? 'done' : ''}">
+    <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}</span></label>
+  </li>`;
+
+  // Ticking a checkbox works from any screen (overview, goals, check-in).
+  document.addEventListener('change', (e) => {
+    const pif = e.target.dataset.pif, todo = e.target.dataset.todo;
+    if (pif) {
+      const month = e.target.dataset.month || thisMonth();
+      state.paidInFull[month] = { ...(state.paidInFull[month] || {}), [pif]: e.target.checked };
+      // Inside the check-in form, don't redraw it: that would wipe balances typed but not saved yet.
+      if (e.target.closest('#ci-form')) { persist(); renderOverview(); } else save();
+      if (e.target.checked) {
+        const streak = Finance.payInFullStreak(state.paidInFull, pif, month);
+        toast(streak > 1 ? `Nice! ${streak} months in a row paid in full.` : 'Nice! Marked as paid in full.');
+      }
+    } else if (todo) {
+      const t = state.todos.find((x) => x.id === todo);
+      if (!t) return;
+      t.done = e.target.checked;
+      save();
+      if (t.done) toast(`Done: "${t.text}" 🎉`);
+    }
+  });
   const latestSpendingMonth = () => state.spending.reduce((m, e) => (e.date.slice(0, 7) > m ? e.date.slice(0, 7) : m), '');
 
   // ---- Overview --------------------------------------------------------
@@ -164,24 +194,53 @@
     }
     renderNetWorthChart(history.slice(-24));
 
-    // Bills
+    // Recurring payments
     const bt = Finance.billTotals(state.bills);
+    const autoSave = Finance.billTotals(state.bills, 'saving').perMonth + Finance.billTotals(state.bills, 'investing').perMonth;
     $('#ov-bills').textContent = money(bt.perMonth);
-    $('#ov-bills-sub').textContent = state.bills.length ? `${money(bt.perYear)} per year` : 'No bills added yet';
+    $('#ov-bills-sub').textContent = !state.bills.length ? 'Nothing added yet'
+      : autoSave ? `+ ${money(autoSave)} saved & invested automatically` : `${money(bt.perYear)} per year`;
     const up = Finance.upcomingBills(state.bills, today, 30);
     $('#ov-upcoming').innerHTML = up.length
-      ? `<ul class="list">${up.map((u) => `<li><span class="when">${esc(dueLabel(u.due))}</span><span>${esc(u.bill.name)}</span><span class="amt">${esc(money(u.bill.amount))}</span></li>`).join('')}</ul>
-         <p class="muted total-line">Total: ${esc(money(up.reduce((s, u) => s + Number(u.bill.amount), 0)))}</p>`
-      : empty(state.bills.length ? 'Nothing due in the next 30 days.' : 'Add your bills and subscriptions to see what\'s coming up.');
+      ? `<ul class="list">${up.map((u) => `<li><span class="when">${esc(dueLabel(u.due))}</span><span>${esc(u.bill.name)} ${kindPill(u.bill)}</span><span class="amt">${u.bill.variable ? '<span class="muted">full balance</span>' : esc(money(u.bill.amount))}</span></li>`).join('')}</ul>`
+      : empty(state.bills.length ? 'Nothing due in the next 30 days.' : 'Add your rent, bills and automatic transfers to see what\'s coming up.');
 
-    // Goals
-    const saved = state.goals.reduce((s, g) => s + (Number(g.saved) || 0), 0);
-    const target = state.goals.reduce((s, g) => s + (Number(g.target) || 0), 0);
+    // My goals (short term on the overview)
+    const shortTodos = state.todos.filter((t) => t.horizon !== 'long');
+    const longTodos = state.todos.filter((t) => t.horizon === 'long');
+    $('#ov-todos').innerHTML = state.todos.length
+      ? `<ul class="todo-list compact">${shortTodos.map(todoItem).join('')}</ul>${longTodos.length ? `<p class="muted todo-long-line">Long term: ${longTodos.map((t) => esc(t.text)).join(' · ')}</p>` : ''}`
+      : empty('Write down your goals on the Goals tab.');
+
+    // Pay-in-full tracker
+    const pifAccounts = activeAccounts().filter((a) => a.payInFull);
+    $('#ov-pif-card').hidden = !pifAccounts.length;
+    $('#ov-pif').innerHTML = pifAccounts.map((a) => {
+      const streak = Finance.payInFullStreak(state.paidInFull, a.id, month);
+      const months = Finance.lastMonths(month, 6);
+      const dots = months.map((m) => {
+        const paid = state.paidInFull[m]?.[a.id];
+        const cls = paid ? 'paid' : m === month ? 'pending' : 'missed';
+        const tip = paid ? 'paid in full' : m === month ? 'not ticked yet' : 'not marked as paid';
+        return `<span class="pif-dot ${cls}" title="${esc(monthLong(m))}: ${tip}"><span>${esc(monthShort(m).split(' ')[0])}</span></span>`;
+      }).join('');
+      const doneThisMonth = !!state.paidInFull[month]?.[a.id];
+      return `<div class="pif">
+        <div class="pif-head"><strong>${esc(a.name)}</strong><span class="pif-streak">${streak ? `🔥 ${streak} month${streak === 1 ? '' : 's'} in a row` : 'No streak yet'}</span></div>
+        <div class="pif-dots">${dots}</div>
+        <label class="check"><input type="checkbox" data-pif="${a.id}" ${doneThisMonth ? 'checked' : ''}> Paid off in full in ${esc(monthLong(month))}</label>
+      </div>`;
+    }).join('');
+
+    // Savings goals
+    const goals = state.goals.map((g) => ({ ...g, saved: Finance.goalSaved(g, state.accounts, state.snapshots, month) }));
+    const saved = goals.reduce((s, g) => s + g.saved, 0);
+    const target = goals.reduce((s, g) => s + (Number(g.target) || 0), 0);
     $('#ov-goals').textContent = money(saved);
-    $('#ov-goals-sub').textContent = state.goals.length ? `of ${money(target)} across ${state.goals.length} goal${state.goals.length === 1 ? '' : 's'}` : 'No goals yet';
-    $('#ov-goal-list').innerHTML = state.goals.length
-      ? state.goals.map((g) => { const p = Finance.goalProgress(g, today); return barRow(g.name, p.ratio, `${Math.round(p.ratio * 100)}%`, p.done ? 'done' : ''); }).join('')
-      : empty('Set a goal, like an emergency fund or a holiday.');
+    $('#ov-goals-sub').textContent = goals.length ? `of ${money(target)} target` : 'No savings goals yet';
+    $('#ov-goal-list').innerHTML = goals.length
+      ? goals.map((g) => { const p = Finance.goalProgress(g, today); return barRow(g.name, p.ratio, `${money(g.saved)} / ${fmtCompact.format(g.target)}`, p.done ? 'done' : ''); }).join('')
+      : empty('Set a savings goal, like a safety net or a house deposit.');
 
     // Spending
     const sm = latestSpendingMonth();
@@ -254,7 +313,7 @@
     const row = (a) => {
       const v = a.id in saved ? saved[a.id] : carried[a.id];
       return `<div class="ci-row">
-        <span class="ci-name">${esc(a.name)}</span>
+        <span class="ci-name">${esc(a.name)}${a.joint ? ' <span class="pill">joint</span>' : ''}</span>
         <input type="number" step="0.01" inputmode="decimal" data-acct="${a.id}" value="${v ?? ''}" placeholder="0" aria-label="${esc(a.name)} balance">
         <button type="button" class="icon-btn" data-edit-acct="${a.id}" title="Rename">Edit</button>
         <button type="button" class="icon-btn" data-remove-acct="${a.id}" title="Remove">✕</button>
@@ -264,6 +323,11 @@
     const liabs = accounts.filter((a) => a.type === 'liability');
     $('#ci-assets').innerHTML = assets.map(row).join('') || empty('Add your bank accounts, savings, investments…');
     $('#ci-liabs').innerHTML = liabs.map(row).join('') || empty('Credit cards, loans, mortgage… (if any)');
+
+    const pif = liabs.filter((a) => a.payInFull);
+    $('#ci-pif').hidden = !pif.length;
+    $('#ci-pif').innerHTML = pif.map((a) => `<label class="check"><input type="checkbox" data-pif="${a.id}" data-month="${month}" ${state.paidInFull[month]?.[a.id] ? 'checked' : ''}>
+      Paid off <strong>${esc(a.name)}</strong> in full in ${esc(monthLong(month))}</label>`).join('');
 
     const prevMonths = Object.keys(state.snapshots).filter((m) => m < month).sort();
     $('#ci-status').textContent = !accounts.length ? ''
@@ -322,6 +386,8 @@
       const a = state.accounts.find((x) => x.id === editId);
       const f = $('#acct-form');
       f.id.value = a.id; f.name.value = a.name; f.type.value = a.type;
+      f.joint.checked = !!a.joint; f.payInFull.checked = !!a.payInFull;
+      syncAcctForm();
       $('#acct-form-title').textContent = 'Edit account';
       $('#acct-cancel').hidden = false;
       f.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -343,17 +409,26 @@
   });
 
   const acctForm = $('#acct-form');
+  function syncAcctForm() {
+    $('.pif-only', acctForm).hidden = acctForm.type.value !== 'liability';
+  }
+  acctForm.type.addEventListener('change', syncAcctForm);
   function resetAcctForm() {
     acctForm.reset(); acctForm.id.value = '';
     $('#acct-form-title').textContent = 'Add an account';
     $('#acct-cancel').hidden = true;
+    syncAcctForm();
   }
   acctForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const id = acctForm.id.value;
     const existing = state.accounts.find((a) => a.id === id);
-    if (existing) { existing.name = acctForm.name.value.trim(); existing.type = acctForm.type.value; }
-    else state.accounts.push({ id: uid(), name: acctForm.name.value.trim(), type: acctForm.type.value });
+    const fields = {
+      name: acctForm.name.value.trim(), type: acctForm.type.value, joint: acctForm.joint.checked,
+      payInFull: acctForm.type.value === 'liability' && acctForm.payInFull.checked,
+    };
+    if (existing) Object.assign(existing, fields);
+    else state.accounts.push({ id: uid(), ...fields });
     resetAcctForm();
     save();
     toast(existing ? 'Account updated' : 'Account added. Enter its balance above and save.');
@@ -370,58 +445,92 @@
     const today = localToday();
     const t = Finance.billTotals(state.bills);
     $('#bills-month').textContent = money(t.perMonth);
-    $('#bills-year').textContent = money(t.perYear);
-    $('#bills-count').textContent = String(state.bills.length);
+    $('#bills-year').textContent = `${money(t.perYear)} per year`;
+    $('#saving-month').textContent = money(Finance.billTotals(state.bills, 'saving').perMonth);
+    $('#investing-month').textContent = money(Finance.billTotals(state.bills, 'investing').perMonth);
 
     const rows = state.bills.map((b) => ({ b, due: Finance.nextDueDate(b, today) })).sort((a, z) => (a.due || '').localeCompare(z.due || ''));
-    $('#bill-list').innerHTML = rows.length ? `<ul class="list bills">${rows.map(({ b, due }) => `
+    const item = ({ b, due }) => `
       <li>
         <div class="bill-main"><strong>${esc(b.name)}</strong>
-          <span class="muted">${esc(Finance.FREQUENCIES[b.frequency]?.label || '')} · next ${esc(dueLabel(due))} · <span class="pill">${esc(b.category)}</span></span></div>
-        <div class="bill-amt"><span class="amt">${esc(money(b.amount))}</span>
-          ${b.frequency !== 'monthly' ? `<span class="muted">${esc(money(Finance.monthlyCost(b)))}/mo</span>` : ''}</div>
+          <span class="muted">${esc(Finance.FREQUENCIES[b.frequency]?.label || '')} · next ${esc(dueLabel(due))}${(b.kind || 'bill') === 'bill' ? ` · <span class="pill">${esc(b.category)}</span>` : ''}</span></div>
+        <div class="bill-amt">${b.variable ? '<span class="muted">full balance</span>' : `<span class="amt">${esc(money(b.amount))}</span>`}
+          ${!b.variable && b.frequency !== 'monthly' ? `<span class="muted">${esc(money(Finance.monthlyCost(b)))}/mo</span>` : ''}</div>
         <div class="row-actions"><button class="icon-btn" data-edit-bill="${b.id}">Edit</button><button class="icon-btn" data-del-bill="${b.id}">✕</button></div>
-      </li>`).join('')}</ul>`
-      : empty('No bills yet. Add rent, utilities, phone, insurance, streaming services, gym…');
+      </li>`;
+    const groups = [
+      ['Bills & expenses', rows.filter(({ b }) => (b.kind || 'bill') === 'bill')],
+      ['Automatic saving & investing', rows.filter(({ b }) => (b.kind || 'bill') !== 'bill')],
+    ].filter(([, list]) => list.length);
+    $('#bill-list').innerHTML = rows.length
+      ? groups.map(([title, list]) => `<h3>${title}</h3><ul class="list bills">${list.map(item).join('')}</ul>`).join('')
+      : empty('Nothing yet. Add rent, utilities, phone, insurance, subscriptions, and automatic transfers to savings or investments.');
 
     const max = t.byCategory[0]?.total || 1;
     $('#bill-cats').innerHTML = t.byCategory.length ? t.byCategory.map((c) => barRow(c.category, c.total / max, money(c.total))).join('') : empty('Add bills to see the breakdown.');
   }
 
+  function syncBillForm() {
+    const f = billForm;
+    $('.bill-only', f).hidden = f.kind.value !== 'bill';
+    f.amount.required = !f.variable.checked;
+    f.amount.disabled = f.variable.checked;
+    if (f.variable.checked) f.amount.value = '';
+  }
+  billForm.kind.addEventListener('change', syncBillForm);
+  billForm.variable.addEventListener('change', syncBillForm);
+
   function resetBillForm() {
     billForm.reset(); billForm.id.value = '';
     billForm.dueDate.value = localToday();
-    $('#bill-form-title').textContent = 'Add a bill or subscription';
+    $('#bill-form-title').textContent = 'Add a recurring payment';
     $('#bill-cancel').hidden = true;
+    syncBillForm();
   }
   billForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = billForm;
-    const bill = { id: f.id.value || uid(), name: f.name.value.trim(), amount: Finance.round2(Number(f.amount.value)), frequency: f.frequency.value, dueDate: f.dueDate.value, category: f.category.value };
+    const kind = f.kind.value;
+    const bill = {
+      id: f.id.value || uid(), name: f.name.value.trim(), kind, variable: f.variable.checked,
+      amount: f.variable.checked ? 0 : Finance.round2(Number(f.amount.value)),
+      frequency: f.frequency.value, dueDate: f.dueDate.value,
+      category: kind === 'bill' ? f.category.value : kind === 'saving' ? 'Saving' : 'Investing',
+    };
     const i = state.bills.findIndex((b) => b.id === bill.id);
     if (i >= 0) state.bills[i] = bill; else state.bills.push(bill);
     resetBillForm();
     save();
-    toast(i >= 0 ? 'Bill updated' : 'Bill added');
+    toast(i >= 0 ? 'Updated' : 'Added');
   });
   $('#bill-cancel').addEventListener('click', resetBillForm);
   $('#bill-list').addEventListener('click', (e) => {
     const editId = e.target.dataset.editBill, delId = e.target.dataset.delBill;
     if (editId) {
       const b = state.bills.find((x) => x.id === editId);
-      for (const k of ['id', 'name', 'amount', 'frequency', 'dueDate', 'category']) billForm[k].value = b[k];
-      $('#bill-form-title').textContent = 'Edit bill';
+      for (const k of ['id', 'name', 'amount', 'frequency', 'dueDate']) billForm[k].value = b[k];
+      billForm.kind.value = b.kind || 'bill';
+      billForm.variable.checked = !!b.variable;
+      if (BILL_CATEGORIES.includes(b.category)) billForm.category.value = b.category;
+      syncBillForm();
+      $('#bill-form-title').textContent = 'Edit recurring payment';
       $('#bill-cancel').hidden = false;
       billForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (delId && confirm('Delete this bill?')) {
+    } else if (delId && confirm('Delete this recurring payment?')) {
       state.bills = state.bills.filter((b) => b.id !== delId);
       save();
     }
   });
   billForm.name.addEventListener('change', () => {
-    // Pre-pick a sensible category from the name, if the user hasn't chosen one.
-    if (billForm.category.value !== 'Housing' || billForm.id.value) return;
+    // Pre-pick a sensible type and category from the name, if the user hasn't chosen one.
+    if (billForm.id.value) return;
     const n = billForm.name.value.toLowerCase();
+    if (billForm.kind.value === 'bill') {
+      if (/invest|brokerage|401|ira\b|etf|stocks|index fund|robo/.test(n)) billForm.kind.value = 'investing';
+      else if (/saving|transfer to|emergency fund/.test(n)) billForm.kind.value = 'saving';
+      syncBillForm();
+    }
+    if (billForm.category.value !== 'Housing') return;
     const guess = /rent|mortgage/.test(n) ? 'Housing' : /electric|water|gas|energy|heating/.test(n) ? 'Utilities'
       : /phone|mobile|internet|broadband|wifi/.test(n) ? 'Phone & internet' : /insurance/.test(n) ? 'Insurance'
       : /netflix|spotify|disney|hbo|prime|apple|icloud|youtube|subscription|adobe|chatgpt|claude/.test(n) ? 'Subscriptions'
@@ -433,10 +542,33 @@
   // ---- Goals -----------------------------------------------------------
 
   const goalForm = $('#goal-form');
+  const todoForm = $('#todo-form');
 
   function renderGoals() {
     const today = localToday();
-    $('#goal-cards').innerHTML = state.goals.length ? state.goals.map((g) => {
+    const month = thisMonth();
+
+    // My goals checklist
+    const list = (horizon) => {
+      const items = state.todos.filter((t) => (t.horizon === 'long') === (horizon === 'long'));
+      return items.length ? items.map((t) => `<li class="${t.done ? 'done' : ''}">
+        <label class="check"><input type="checkbox" data-todo="${t.id}" ${t.done ? 'checked' : ''}> <span>${esc(t.text)}</span></label>
+        <span class="row-actions"><button class="icon-btn" data-edit-todo="${t.id}">Edit</button><button class="icon-btn" data-del-todo="${t.id}" title="Delete">✕</button></span>
+      </li>`).join('') : `<li class="empty">Nothing here yet.</li>`;
+    };
+    $('#todo-short').innerHTML = list('short');
+    $('#todo-long').innerHTML = list('long');
+
+    // Account picker for savings goals
+    const prev = goalForm.accountId.value;
+    goalForm.accountId.innerHTML = '<option value="">No, I\'ll update it myself</option>'
+      + activeAccounts().filter((a) => a.type !== 'liability').map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    goalForm.accountId.value = activeAccounts().some((a) => a.id === prev) ? prev : '';
+    syncGoalForm();
+
+    $('#goal-cards').innerHTML = state.goals.length ? state.goals.map((goal) => {
+      const g = { ...goal, saved: Finance.goalSaved(goal, state.accounts, state.snapshots, month) };
+      const linked = goal.accountId && state.accounts.find((a) => a.id === goal.accountId);
       const p = Finance.goalProgress(g, today);
       let detail;
       if (p.done) detail = '<span class="pos">Goal reached! 🎉</span>';
@@ -448,25 +580,69 @@
         <div class="bar-track big"><div class="bar-fill ${p.done ? 'done' : ''}" style="width:${(p.ratio * 100).toFixed(1)}%"></div></div>
         <p class="goal-amounts"><strong>${esc(money(g.saved))}</strong> of ${esc(money(g.target))}</p>
         <p class="muted">${detail}</p>
-        <form class="goal-add" data-goal="${g.id}">
+        ${linked ? `<p class="muted linked">Tracks your <strong>${esc(linked.name)}</strong> balance, so it updates when you do your check-in.</p>`
+          : `<form class="goal-add" data-goal="${g.id}">
           <input type="number" step="0.01" inputmode="decimal" name="delta" placeholder="Amount" aria-label="Amount to add" required>
           <button type="submit" name="op" value="add">Add</button>
           <button type="submit" name="op" value="sub" class="ghost">Take out</button>
-        </form>
+        </form>`}
         <div class="row-actions left"><button class="icon-btn" data-edit-goal="${g.id}">Edit</button><button class="icon-btn" data-del-goal="${g.id}">Delete</button></div>
       </div>`;
-    }).join('') : `<div class="card">${empty('No goals yet. Examples: an emergency fund (3 months of expenses), a holiday, a deposit for a home.')}</div>`;
+    }).join('') : `<div class="card">${empty('No savings goals yet. Examples: a safety net (3–6 months of expenses), a house deposit, a holiday.')}</div>`;
   }
+
+  // ---- My goals (checklist) ----
+  function resetTodoForm() {
+    const horizon = todoForm.horizon.value;
+    todoForm.reset(); todoForm.id.value = '';
+    todoForm.horizon.value = horizon;
+    todoForm.querySelector('button[type=submit]').textContent = 'Add';
+    $('#todo-cancel').hidden = true;
+  }
+  todoForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = todoForm.text.value.trim();
+    if (!text) return;
+    const existing = state.todos.find((t) => t.id === todoForm.id.value);
+    if (existing) Object.assign(existing, { text, horizon: todoForm.horizon.value });
+    else state.todos.push({ id: uid(), text, horizon: todoForm.horizon.value, done: false });
+    resetTodoForm();
+    save();
+  });
+  $('#todo-cancel').addEventListener('click', resetTodoForm);
+  $('#view-goals').addEventListener('click', (e) => {
+    const editId = e.target.dataset.editTodo, delId = e.target.dataset.delTodo;
+    if (editId) {
+      const t = state.todos.find((x) => x.id === editId);
+      todoForm.id.value = t.id; todoForm.text.value = t.text; todoForm.horizon.value = t.horizon || 'short';
+      todoForm.querySelector('button[type=submit]').textContent = 'Save';
+      $('#todo-cancel').hidden = false;
+      todoForm.text.focus();
+    } else if (delId && confirm('Delete this goal?')) {
+      state.todos = state.todos.filter((t) => t.id !== delId);
+      save();
+    }
+  });
+
+  // ---- Savings goals ----
+  function syncGoalForm() {
+    $('.manual-only', goalForm).hidden = !!goalForm.accountId.value;
+  }
+  goalForm.accountId.addEventListener('change', syncGoalForm);
 
   function resetGoalForm() {
     goalForm.reset(); goalForm.id.value = '';
     $('#goal-form-title').textContent = 'Add a savings goal';
     $('#goal-cancel').hidden = true;
+    syncGoalForm();
   }
   goalForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = goalForm;
-    const goal = { id: f.id.value || uid(), name: f.name.value.trim(), target: Finance.round2(Number(f.target.value)), saved: Finance.round2(Number(f.saved.value) || 0), targetDate: f.targetDate.value || '' };
+    const goal = {
+      id: f.id.value || uid(), name: f.name.value.trim(), target: Finance.round2(Number(f.target.value)),
+      saved: Finance.round2(Number(f.saved.value) || 0), targetDate: f.targetDate.value || '', accountId: f.accountId.value || '',
+    };
     const i = state.goals.findIndex((g) => g.id === goal.id);
     if (i >= 0) state.goals[i] = goal; else state.goals.push(goal);
     resetGoalForm();
@@ -490,11 +666,12 @@
     const editId = e.target.dataset.editGoal, delId = e.target.dataset.delGoal;
     if (editId) {
       const g = state.goals.find((x) => x.id === editId);
-      for (const k of ['id', 'name', 'target', 'saved', 'targetDate']) goalForm[k].value = g[k] ?? '';
-      $('#goal-form-title').textContent = 'Edit goal';
+      for (const k of ['id', 'name', 'target', 'saved', 'targetDate', 'accountId']) goalForm[k].value = g[k] ?? '';
+      syncGoalForm();
+      $('#goal-form-title').textContent = 'Edit savings goal';
       $('#goal-cancel').hidden = false;
       goalForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (delId && confirm('Delete this goal?')) {
+    } else if (delId && confirm('Delete this savings goal?')) {
       state.goals = state.goals.filter((g) => g.id !== delId);
       save();
     }
@@ -715,7 +892,7 @@
       { id: ids.bank, name: 'Bank account', type: 'asset' },
       { id: ids.sav, name: 'Savings', type: 'asset' },
       { id: ids.inv, name: 'Investments', type: 'asset' },
-      { id: ids.cc, name: 'Credit card', type: 'liability' },
+      { id: ids.cc, name: 'Credit card', type: 'liability', payInFull: true },
       { id: ids.car, name: 'Car loan', type: 'liability' },
     ];
     Finance.lastMonths(thisMonth(), 12).forEach((m, i) => {
@@ -741,9 +918,20 @@
       { name: 'Car insurance', amount: 720, frequency: 'yearly', dueDate: Finance.addDays(t, 40), category: 'Insurance' },
       { name: 'Car loan payment', amount: 310, frequency: 'monthly', dueDate: day(25), category: 'Loans & credit' },
       { name: 'Amazon Prime', amount: 95, frequency: 'yearly', dueDate: Finance.addDays(t, 12), category: 'Subscriptions' },
-    ].map((b) => ({ id: uid(), ...b }));
+      { name: 'Credit card: pay in full', amount: 0, variable: true, frequency: 'monthly', dueDate: day(1), category: 'Loans & credit' },
+      { name: 'Transfer to savings', amount: 450, kind: 'saving', frequency: 'monthly', dueDate: day(2), category: 'Saving' },
+      { name: 'Index fund', amount: 200, kind: 'investing', frequency: 'monthly', dueDate: day(5), category: 'Investing' },
+    ].map((b) => ({ id: uid(), kind: 'bill', ...b }));
+    for (const m of Finance.lastMonths(Finance.addMonthsToKey(thisMonth(), -1), 4)) s.paidInFull[m] = { [ids.cc]: true };
+    s.todos = [
+      { text: 'Build a 3-month emergency fund', horizon: 'short', done: false },
+      { text: 'Cancel subscriptions I don\'t use', horizon: 'short', done: true },
+      { text: 'Book a meeting with a financial advisor', horizon: 'short', done: false },
+      { text: 'Save for a house deposit', horizon: 'long', done: false },
+      { text: 'Pay off the car loan', horizon: 'long', done: false },
+    ].map((x) => ({ id: uid(), ...x }));
     s.goals = [
-      { id: uid(), name: 'Emergency fund', target: 8000, saved: 5200, targetDate: Finance.addDays(t, 270) },
+      { id: uid(), name: 'Emergency fund', target: 12000, saved: 0, accountId: ids.sav, targetDate: Finance.addDays(t, 270) },
       { id: uid(), name: 'Summer holiday', target: 2000, saved: 650, targetDate: Finance.addDays(t, 200) },
       { id: uid(), name: 'New laptop', target: 1200, saved: 1200, targetDate: '' },
     ];
