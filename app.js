@@ -383,6 +383,14 @@
     return { goal: g, saved, costs, months: Finance.monthsCovered(saved, costs), targetMonths: Finance.monthsCovered(Number(g.target) || 0, costs) };
   }
 
+  /** Upcoming milestones of a goal (e.g. $300K by Dec 2027 on the way to $500K), each with its own projection. */
+  function milestoneStatus(g, today) {
+    return (g.milestones || [])
+      .filter((m) => Number(m.target) > 0 && m.date && m.date >= today && (!g.targetDate || m.date < g.targetDate))
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((m) => ({ ...m, target: Number(m.target), gp: Finance.goalPlan({ ...g, target: Number(m.target), targetDate: m.date }, g.saved, state.bills, today) }));
+  }
+
   /** One-line status for a savings goal: on track / short / months covered. */
   function goalStatusLine(g, brief) {
     const today = localToday();
@@ -394,8 +402,13 @@
       const sn = safetyNetInfo();
       if (sn) bits.push(`Covers <strong>${sn.months} months</strong> of costs (target ${sn.targetMonths})`);
     }
+    const nextMs = milestoneStatus(g, today)[0];
+    if (nextMs) {
+      bits.push(`${esc(fmtCompact.format(nextMs.target))} by ${esc(monthShort(nextMs.date.slice(0, 7)))}: ${nextMs.gp.onTrack ? '<span class="pos">on track ✓</span>' : `<span class="neg">short ${esc(fmtCompact.format(nextMs.gp.shortfall))}</span>`}`);
+    }
     if (g.targetDate) {
-      if (gp.onTrack) bits.push(`<span class="pos">On track ✓</span> projected ${esc(fmtCompact.format(gp.projected))} by ${esc(monthShort(g.targetDate.slice(0, 7)))}`);
+      if (nextMs) bits.push(`${esc(fmtCompact.format(g.target))} by ${esc(monthShort(g.targetDate.slice(0, 7)))}: ${gp.onTrack ? '<span class="pos">on track ✓</span>' : `<span class="neg">short ${esc(fmtCompact.format(gp.shortfall))}</span>`}`);
+      else if (gp.onTrack) bits.push(`<span class="pos">On track ✓</span> projected ${esc(fmtCompact.format(gp.projected))} by ${esc(monthShort(g.targetDate.slice(0, 7)))}`);
       else bits.push(`<span class="neg">Short ${esc(fmtCompact.format(gp.shortfall))}</span>: needs ${esc(money(gp.extraPerMonth))}/month more`);
     } else if (gp.autoPerMonth > 0) {
       bits.push(`${esc(money(gp.autoPerMonth))}/month goes in automatically${gp.monthsToReach ? `: about ${gp.monthsToReach} months to go` : ''}`);
@@ -977,10 +990,17 @@
         if (sn) lines.push(`<p class="muted">Covers ${sn.months} months of costs (target ${sn.targetMonths}).</p>`);
       }
       const expected = (goal.expected || []).map((x, i) => ({ ...x, i })).filter((x) => !x.received);
+      const ms = milestoneStatus(g, today);
+      const markers = ms.filter((m) => m.target < g.target).map((m) => `<span class="ms-mark" style="left:${((m.target / g.target) * 100).toFixed(1)}%" title="Milestone: ${esc(money(m.target))} by ${esc(monthLong(m.date.slice(0, 7)))}"></span>`).join('');
+      const msBlock = ms.length ? `<div class="milestones"><span class="field-label">Milestones on the way</span>${ms.map((m) => `<div class="ms-row">
+          <span><strong>${esc(money(m.target))}</strong> by ${esc(monthLong(m.date.slice(0, 7)))}</span>
+          <span class="${m.gp.onTrack ? 'pos' : 'neg'}">${m.gp.onTrack ? `✓ on track (projected ${esc(fmtCompact.format(m.gp.projected))})` : `short ${esc(money(m.gp.shortfall))}: +${esc(money(m.gp.extraPerMonth))}/month`}</span>
+        </div>`).join('')}</div>` : '';
       return `<div class="card goal">
         <div class="goal-head"><h2>${esc(g.name)}</h2><span class="goal-pct">${Math.round(p.ratio * 100)}%</span></div>
-        <div class="bar-track big"><div class="bar-fill ${p.done ? 'done' : ''}" style="width:${(p.ratio * 100).toFixed(1)}%"></div></div>
+        <div class="bar-track big ms-track"><div class="bar-fill ${p.done ? 'done' : ''}" style="width:${(p.ratio * 100).toFixed(1)}%"></div>${markers}</div>
         <p class="goal-amounts"><strong>${esc(money(g.saved))}</strong> of ${esc(money(g.target))}${g.targetDate ? ` · by ${esc(monthLong(g.targetDate.slice(0, 7)))}` : ''}</p>
+        ${msBlock}
         ${lines.join('')}
         ${expected.length ? `<div class="expected"><span class="field-label">Expected money</span>${expected.map((x) => `<div class="exp-row">
             <span>${esc(x.label || 'Expected')} · ${esc(money(x.amount))} · ${esc(dayLabel(x.date))}${x.date < today ? ' <span class="neg">(date passed)</span>' : ''}</span>
@@ -1056,12 +1076,23 @@
     </div>`;
   }
   $('#goal-add-expected').addEventListener('click', () => $('#goal-expected').insertAdjacentHTML('beforeend', expectedRow()));
+
+  function milestoneRow(m = {}) {
+    return `<div class="exp-edit ms-edit">
+      <input type="number" data-ms="target" step="1" min="0" placeholder="Amount, e.g. 300000" value="${m.target ?? ''}" aria-label="Milestone amount">
+      <input type="date" data-ms="date" value="${esc(m.date || '')}" aria-label="Milestone date">
+      <button type="button" class="icon-btn" data-exp-del title="Remove">✕</button>
+    </div>`;
+  }
+  $('#goal-add-milestone').addEventListener('click', () => $('#goal-milestones').insertAdjacentHTML('beforeend', milestoneRow()));
+  $('#goal-milestones').addEventListener('click', (e) => { if (e.target.matches('[data-exp-del]')) e.target.closest('.exp-edit').remove(); });
   $('#goal-expected').addEventListener('click', (e) => { if (e.target.matches('[data-exp-del]')) e.target.closest('.exp-edit').remove(); });
 
   function resetGoalForm() {
     goalForm.reset(); goalForm.id.value = '';
     $$('#goal-accounts input').forEach((i) => { i.checked = false; });
     $('#goal-expected').innerHTML = '';
+    $('#goal-milestones').innerHTML = '';
     $('#goal-form-title').textContent = 'Add a savings goal';
     $('#goal-cancel').hidden = true;
     syncGoalForm();
@@ -1082,6 +1113,10 @@
       saved: Finance.round2(Number(f.saved.value) || 0), targetDate: f.targetDate.value || '',
       accountIds: $$('#goal-accounts input:checked').map((i) => i.value),
       expected, isSafetyNet: f.isSafetyNet.checked,
+      milestones: $$('#goal-milestones .ms-edit').map((row) => ({
+        target: Finance.round2(Number($('[data-ms=target]', row).value) || 0),
+        date: $('[data-ms=date]', row).value,
+      })).filter((m) => m.target > 0 && m.date),
     };
     if (goal.isSafetyNet) for (const g of state.goals) if (g.id !== goal.id) g.isSafetyNet = false;
     const i = state.goals.findIndex((g) => g.id === goal.id);
@@ -1112,6 +1147,7 @@
       const ids = new Set(Finance.goalAccountIds(g));
       $$('#goal-accounts input').forEach((i) => { i.checked = ids.has(i.value); });
       $('#goal-expected').innerHTML = (g.expected || []).filter((x) => !x.received).map(expectedRow).join('');
+      $('#goal-milestones').innerHTML = (g.milestones || []).map(milestoneRow).join('');
       syncGoalForm();
       $('#goal-form-title').textContent = 'Edit savings goal';
       $('#goal-cancel').hidden = false;
